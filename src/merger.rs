@@ -5,31 +5,86 @@
 // more details in file LICENSE, LICENSE.additional and CONTRIBUTING.
 
 use anc_assembler::entry::ImageCommonEntry;
-use anc_image::module_image::ModuleImage;
+use anc_image::entry::FunctionNameEntry;
 
-struct ModuleMaterial {
-    import_module_names: Vec<String>,
-    import_function_fullnames: Vec<String>,
-    internal_function_fullnames: Vec<String>, // starts with "module::"
+use crate::{
+    entry_merger::{
+        merge_import_function_entries, merge_import_module_entries,
+        merge_local_variable_list_entries, merge_type_entries,
+    },
+    LinkerError,
+};
+
+pub type RemapIndices = Vec<usize>;
+
+pub struct ModuleEntryRemap {
+    pub import_module_remap_indices_list: Vec<RemapIndices>,
+    pub type_remap_indices_list: Vec<RemapIndices>,
+    pub local_variable_list_remap_indices_list: Vec<RemapIndices>,
+    pub function_public_remap_indices_list: Vec<RemapIndices>,
 }
 
-/// note that only submodules under the same module can be merged.
-pub fn merge_modules(submodule_entries: &[ImageCommonEntry]) {
-    let a = submodule_entries
+/// note that not only submodules under the same module can be merged.
+pub fn merge_modules(submodule_entries: &[ImageCommonEntry]) -> Result<(), LinkerError> {
+    // merge type entries
+    let type_entries_list = submodule_entries
         .iter()
-        .map(|item| &item.import_module_entries)
+        .map(|item| item.type_entries.as_slice())
         .collect::<Vec<_>>();
+    let (type_entries, type_remap_indices_list) = merge_type_entries(&type_entries_list);
 
-    todo!()
+    // merge local variable list entries
+    let local_variable_list_entries_list = submodule_entries
+        .iter()
+        .map(|item| item.local_variable_list_entries.as_slice())
+        .collect::<Vec<_>>();
+    let (local_variable_list_entries, local_variable_list_remap_indices_list) =
+        merge_local_variable_list_entries(&local_variable_list_entries_list);
+
+    // merge import module entries
+    let import_module_entries_list = submodule_entries
+        .iter()
+        .map(|item| item.import_module_entries.as_slice())
+        .collect::<Vec<_>>();
+    let (import_module_entries, import_module_remap_indices_list) =
+        merge_import_module_entries(&import_module_entries_list)?;
+
+    // todo merge data entries
+
+    // todo merge data name entries
+
+    // todo merge import data
+
+    // todo merge external libraries
+
+    // todo merge external functions
+
+    // merge function name entries
+    let mut function_name_entries: Vec<FunctionNameEntry> = vec![];
+    for submodule_entry in submodule_entries {
+        function_name_entries.extend(submodule_entry.function_name_entries.to_vec());
+    }
+
+    // merge import function entries
+    let import_function_entries_list = submodule_entries
+        .iter()
+        .map(|item| item.import_function_entries.as_slice())
+        .collect::<Vec<_>>();
+    let (import_function_entries, function_public_remap_indices_list) =
+        merge_import_function_entries(
+            &function_name_entries,
+            &import_function_entries_list,
+            &import_module_remap_indices_list,
+            &type_remap_indices_list,
+        );
+
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use anc_assembler::{assembler::assemble_module_node, entry::ImageCommonEntry};
-    use anc_image::{
-        entry::{ExternalLibraryEntry, ImportModuleEntry},
-        module_image::ModuleImage,
-    };
+    use anc_image::entry::{ExternalLibraryEntry, ImportModuleEntry};
     use anc_parser_asm::parser::parse_from_str;
 
     struct SubModule<'a> {
