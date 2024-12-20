@@ -19,17 +19,17 @@ pub struct LinkerError {
 pub enum LinkErrorType {
     CannotLoadMoudle(/* module name */ String, /* message */ String),
 
-    /// Same name but different types.
-    DependentModuleNameConflict(/* module name */ String),
+    /// Modules/libraries with the same name but different types.
+    DependentNameConflict(/* module/library name */ String),
 
-    /// Modules that lack version information such as "local" and "remote" cannot
-    /// be merged if only the names are the same but the sources (e.g. file paths
-    /// and commit/tags) do not match.
-    DependentModuleCannotMerge(/* module name */ String),
+    /// Modules/libraries that lack version information (such as "local" and "remote")
+    /// cannot be merged if only the names are the same but the sources
+    /// (e.g. file paths and commit/tags) do not match.
+    DependentCannotMerge(/* module/library name */ String),
 
-    /// Modules with the same name cannot be merged if
-    /// their major versions do not match.
-    DependentModuleMajorVersionConflict(/* module name */ String),
+    /// Modules/libraries with the same name cannot be merged if
+    /// their versions conflict.
+    DependentVersionConflict(/* module/library name */ String),
 
     /// The imported function canot be found.
     UnresolvedFunctionName(/* function name */ String),
@@ -48,9 +48,9 @@ impl Display for LinkerError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self .error_type {
             LinkErrorType::CannotLoadMoudle(module_name, message) => write!(f, "Failed to load module \"{module_name}\", message: \"{message}\""),
-            LinkErrorType::DependentModuleNameConflict(module_name) =>write!(f, "Dependent modules \"{module_name}\" cannot be merged because there are different types."),
-            LinkErrorType::DependentModuleCannotMerge(module_name) => write!(f, "Dependent modules \"{module_name}\" cannot be merged because the sources are different."),
-            LinkErrorType::DependentModuleMajorVersionConflict(module_name) => write!(f, "Dependent modules \"{module_name}\" cannot be merged because the major versions are different."),
+            LinkErrorType::DependentNameConflict(module_name) =>write!(f, "Dependent modules \"{module_name}\" cannot be merged because there are different types."),
+            LinkErrorType::DependentCannotMerge(module_name) => write!(f, "Dependent modules \"{module_name}\" cannot be merged because the sources are different."),
+            LinkErrorType::DependentVersionConflict(module_name) => write!(f, "Dependent modules \"{module_name}\" cannot be merged because the major versions are different."),
             LinkErrorType::UnresolvedFunctionName(function_name) => write!(f, "The imported function \"{function_name}\" cannot be found."),
             LinkErrorType::UnresolvedDataName(data_name) => write!(f, "The imported data \"{data_name}\" cannot be found."),
         }

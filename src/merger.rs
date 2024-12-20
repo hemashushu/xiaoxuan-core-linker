@@ -9,8 +9,8 @@ use anc_image::entry::FunctionNameEntry;
 
 use crate::{
     entry_merger::{
-        merge_import_function_entries, merge_import_module_entries,
-        merge_local_variable_list_entries, merge_type_entries,
+        merge_data_entries, merge_import_data_entries, merge_import_function_entries,
+        merge_import_module_entries, merge_local_variable_list_entries, merge_type_entries,
     },
     LinkerError,
 };
@@ -18,9 +18,10 @@ use crate::{
 pub type RemapIndices = Vec<usize>;
 
 pub struct ModuleEntryRemap {
-    pub import_module_remap_indices_list: Vec<RemapIndices>,
+    // pub import_module_remap_indices_list: Vec<RemapIndices>,
     pub type_remap_indices_list: Vec<RemapIndices>,
     pub local_variable_list_remap_indices_list: Vec<RemapIndices>,
+    pub data_public_remap_indices_list: Vec<RemapIndices>,
     pub function_public_remap_indices_list: Vec<RemapIndices>,
 }
 
@@ -49,11 +50,52 @@ pub fn merge_modules(submodule_entries: &[ImageCommonEntry]) -> Result<(), Linke
     let (import_module_entries, import_module_remap_indices_list) =
         merge_import_module_entries(&import_module_entries_list)?;
 
-    // todo merge data entries
+    // merge data name and data entries
+    let data_name_entries_list = submodule_entries
+        .iter()
+        .map(|item| item.data_name_entries.as_slice())
+        .collect::<Vec<_>>();
 
-    // todo merge data name entries
+    let read_only_data_entries_list = submodule_entries
+        .iter()
+        .map(|item| item.read_only_data_entries.as_slice())
+        .collect::<Vec<_>>();
 
-    // todo merge import data
+    let read_write_data_entries_list = submodule_entries
+        .iter()
+        .map(|item| item.read_write_data_entries.as_slice())
+        .collect::<Vec<_>>();
+
+    let uninit_data_entries_list = submodule_entries
+        .iter()
+        .map(|item| item.uninit_data_entries.as_slice())
+        .collect::<Vec<_>>();
+
+    let (
+        data_name_entries,
+        read_only_data_entries,
+        read_write_data_entries,
+        uninit_data_entries,
+        internal_data_remap_indices_list,
+    ) = merge_data_entries(
+        &data_name_entries_list,
+        &read_only_data_entries_list,
+        &read_write_data_entries_list,
+        &uninit_data_entries_list,
+    );
+
+    // merge import data
+    let import_data_entries_list = submodule_entries
+        .iter()
+        .map(|item| item.import_data_entries.as_slice())
+        .collect::<Vec<_>>();
+
+    let (import_data_entries, data_public_remap_indices_list) = merge_import_data_entries(
+        &data_name_entries,
+        &internal_data_remap_indices_list,
+        &import_module_remap_indices_list,
+        &import_data_entries_list,
+    );
 
     // todo merge external libraries
 
@@ -61,7 +103,13 @@ pub fn merge_modules(submodule_entries: &[ImageCommonEntry]) -> Result<(), Linke
 
     // merge function name entries
     let mut function_name_entries: Vec<FunctionNameEntry> = vec![];
+    let mut internal_function_remap_indices_list: Vec<RemapIndices> = vec![];
+
     for submodule_entry in submodule_entries {
+        let indices = (function_name_entries.len()
+            ..function_name_entries.len() + submodule_entry.function_name_entries.len())
+            .collect::<Vec<_>>();
+        internal_function_remap_indices_list.push(indices);
         function_name_entries.extend(submodule_entry.function_name_entries.to_vec());
     }
 
@@ -73,9 +121,10 @@ pub fn merge_modules(submodule_entries: &[ImageCommonEntry]) -> Result<(), Linke
     let (import_function_entries, function_public_remap_indices_list) =
         merge_import_function_entries(
             &function_name_entries,
-            &import_function_entries_list,
+            &internal_function_remap_indices_list,
             &import_module_remap_indices_list,
             &type_remap_indices_list,
+            &import_function_entries_list,
         );
 
     Ok(())

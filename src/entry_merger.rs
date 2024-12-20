@@ -5,16 +5,19 @@
 // more details in file LICENSE, LICENSE.additional and CONTRIBUTING.
 
 use anc_image::entry::{
-    FunctionNameEntry, ImportFunctionEntry, ImportModuleEntry, LocalVariableListEntry, TypeEntry,
+    DataNameEntry, FunctionNameEntry, ImportDataEntry, ImportFunctionEntry, ImportModuleEntry,
+    InitedDataEntry, LocalVariableListEntry, TypeEntry, UninitDataEntry,
 };
-use anc_isa::ModuleDependency;
+use anc_isa::{DataSectionType, ModuleDependency};
 
 use crate::{merger::RemapIndices, LinkErrorType, LinkerError};
 
 pub fn merge_type_entries(
     type_entries_list: &[&[TypeEntry]],
-    // remap_module_list: &mut [ModuleEntryRemap],
-) -> (Vec<TypeEntry>, Vec<RemapIndices>) {
+) -> (
+    /* type_entries */ Vec<TypeEntry>,
+    /* type_remap_indices_list */ Vec<RemapIndices>,
+) {
     // copy the first list
     let mut entries_merged = type_entries_list[0].to_vec();
     let mut type_remap_indices_list = vec![(0..entries_merged.len()).collect()];
@@ -51,8 +54,10 @@ pub fn merge_type_entries(
 
 pub fn merge_local_variable_list_entries(
     local_variable_list_entries_list: &[&[LocalVariableListEntry]],
-    // remap_module_list: &mut [ModuleEntryRemap],
-) -> (Vec<LocalVariableListEntry>, Vec<RemapIndices>) {
+) -> (
+    /* local_variable_list_entries */ Vec<LocalVariableListEntry>,
+    /* local_variable_list_remap_indices_list */ Vec<RemapIndices>,
+) {
     // copy the first list
     let mut entries_merged = local_variable_list_entries_list[0].to_vec();
     let mut local_variable_list_remap_indices_list = vec![(0..entries_merged.len()).collect()];
@@ -89,8 +94,13 @@ pub fn merge_local_variable_list_entries(
 
 pub fn merge_import_module_entries(
     import_module_entries_list: &[&[ImportModuleEntry]],
-    // remap_module_list: &mut [ModuleEntryRemap],
-) -> Result<(Vec<ImportModuleEntry>, Vec<RemapIndices>), LinkerError> {
+) -> Result<
+    (
+        /* import_module_entries */ Vec<ImportModuleEntry>,
+        /* import_module_remap_indices_list */ Vec<RemapIndices>,
+    ),
+    LinkerError,
+> {
     // copy the first list
     let mut entries_merged = import_module_entries_list[0].to_vec();
     let mut import_module_remap_indices_list = vec![(0..entries_merged.len()).collect()];
@@ -121,13 +131,11 @@ pub fn merge_import_module_entries(
                             ModuleDependency::Local(_) => {
                                 if matches!(dependency_merged, ModuleDependency::Local(_)) {
                                     return Err(LinkerError::new(
-                                        LinkErrorType::DependentModuleCannotMerge(
-                                            module_name.to_owned(),
-                                        ),
+                                        LinkErrorType::DependentCannotMerge(module_name.to_owned()),
                                     ));
                                 } else {
                                     return Err(LinkerError::new(
-                                        LinkErrorType::DependentModuleNameConflict(
+                                        LinkErrorType::DependentNameConflict(
                                             module_name.to_owned(),
                                         ),
                                     ));
@@ -136,13 +144,11 @@ pub fn merge_import_module_entries(
                             ModuleDependency::Remote(_) => {
                                 if matches!(dependency_merged, ModuleDependency::Remote(_)) {
                                     return Err(LinkerError::new(
-                                        LinkErrorType::DependentModuleCannotMerge(
-                                            module_name.to_owned(),
-                                        ),
+                                        LinkErrorType::DependentCannotMerge(module_name.to_owned()),
                                     ));
                                 } else {
                                     return Err(LinkerError::new(
-                                        LinkErrorType::DependentModuleNameConflict(
+                                        LinkErrorType::DependentNameConflict(
                                             module_name.to_owned(),
                                         ),
                                     ));
@@ -163,9 +169,9 @@ pub fn merge_import_module_entries(
                                             // replace
                                             entries_merged[pos_merged] = entry_source.clone()
                                         }
-                                        VersionCompareResult::MajorDifferent => {
+                                        VersionCompareResult::Different => {
                                             return Err(LinkerError::new(
-                                                LinkErrorType::DependentModuleMajorVersionConflict(
+                                                LinkErrorType::DependentVersionConflict(
                                                     module_name.to_owned(),
                                                 ),
                                             ));
@@ -173,25 +179,21 @@ pub fn merge_import_module_entries(
                                     }
                                 } else {
                                     return Err(LinkerError::new(
-                                        LinkErrorType::DependentModuleNameConflict(
+                                        LinkErrorType::DependentNameConflict(
                                             module_name.to_owned(),
                                         ),
                                     ));
                                 }
                             }
                             ModuleDependency::Runtime => {
-                                return Err(LinkerError::new(
-                                    LinkErrorType::DependentModuleNameConflict(
-                                        module_name.to_owned(),
-                                    ),
-                                ))
+                                return Err(LinkerError::new(LinkErrorType::DependentNameConflict(
+                                    module_name.to_owned(),
+                                )))
                             }
                             ModuleDependency::Current => {
-                                return Err(LinkerError::new(
-                                    LinkErrorType::DependentModuleNameConflict(
-                                        module_name.to_owned(),
-                                    ),
-                                ))
+                                return Err(LinkerError::new(LinkErrorType::DependentNameConflict(
+                                    module_name.to_owned(),
+                                )))
                             }
                         }
                     }
@@ -215,12 +217,335 @@ pub fn merge_import_module_entries(
     Ok((entries_merged, import_module_remap_indices_list))
 }
 
+pub fn merge_import_function_entries(
+    function_name_entries: &[FunctionNameEntry],
+    internal_function_remap_indices_list: &[RemapIndices],
+    import_module_remap_indices_list: &[RemapIndices],
+    type_remap_indices_list: &[RemapIndices],
+    import_function_entries_list: &[&[ImportFunctionEntry]],
+) -> (
+    /* import_data_entries */ Vec<ImportFunctionEntry>,
+    /* data_public_remap_indices_list */ Vec<RemapIndices>,
+) {
+    // note:
+    // - when adding new `ImportFunctionEntry`, the propertries "import_module_index"
+    //   and "type_index" need to be updated.
+    // - when merging functions, only the "fullname" will be used to determine if
+    //   the functions are the same or not, and the module in which the functions
+    //   reside will be ignored.
+
+    let mut entries_merged: Vec<ImportFunctionEntry> = vec![];
+    let mut import_function_remap_items_list: Vec<Vec<ImportRemapItem>> = vec![];
+
+    // merge import function list
+    for (submodule_index, entries_source) in import_function_entries_list.iter().enumerate() {
+        let mut indices: Vec<ImportRemapItem> = vec![];
+
+        // check each entry
+        for entry_source in entries_source.iter() {
+            // check the internal function list first
+            let pos_internal_opt = function_name_entries
+                .iter()
+                .position(|item| item.full_name == entry_source.full_name);
+
+            if let Some(pos_internal) = pos_internal_opt {
+                // the target is a internal function, instead of imported function
+                // todo: validate the declare type
+                indices.push(ImportRemapItem::Internal(pos_internal));
+            } else {
+                // the target is an imported function
+
+                // check the merged list first
+                let pos_merged_opt = entries_merged
+                    .iter()
+                    .position(|item| item.full_name == entry_source.full_name);
+
+                match pos_merged_opt {
+                    Some(pos_merged) => {
+                        // found exists
+                        indices.push(ImportRemapItem::Import(pos_merged));
+                    }
+                    None => {
+                        // add entry
+                        let pos_new = entries_merged.len();
+                        let entry_merged = ImportFunctionEntry::new(
+                            entry_source.full_name.to_owned(),
+                            import_module_remap_indices_list[submodule_index]
+                                [entry_source.import_module_index],
+                            type_remap_indices_list[submodule_index][entry_source.type_index],
+                        );
+                        entries_merged.push(entry_merged);
+                        indices.push(ImportRemapItem::Import(pos_new));
+                    }
+                }
+            }
+        }
+
+        import_function_remap_items_list.push(indices);
+    }
+
+    // build the function public index remap list
+    let mut function_public_remap_indices_list: Vec<RemapIndices> = vec![];
+    let import_function_count = entries_merged.len();
+    for (remap_items, internal_function_indices) in import_function_remap_items_list
+        .iter()
+        .zip(internal_function_remap_indices_list.iter())
+    {
+        let mut indices = vec![];
+
+        // add the "import" part of the current module
+        for remap_item in remap_items {
+            match remap_item {
+                ImportRemapItem::Import(idx) => {
+                    indices.push(*idx);
+                }
+                ImportRemapItem::Internal(idx) => {
+                    indices.push(idx + import_function_count);
+                }
+            }
+        }
+
+        // add the "internal" part of the current module
+        for function_internal_index in internal_function_indices {
+            indices.push(function_internal_index + import_function_count);
+        }
+
+        function_public_remap_indices_list.push(indices);
+    }
+
+    (entries_merged, function_public_remap_indices_list)
+}
+
+pub fn merge_data_entries(
+    data_name_entries_list: &[&[DataNameEntry]],
+    read_only_data_entries_list: &[&[InitedDataEntry]],
+    read_write_data_entries_list: &[&[InitedDataEntry]],
+    uninit_data_entries_list: &[&[UninitDataEntry]],
+) -> (
+    /* data_name_entries */ Vec<DataNameEntry>,
+    /* read_only_data_entries */ Vec<InitedDataEntry>,
+    /* read_write_data_entries */ Vec<InitedDataEntry>,
+    /* uninit_data_entries */ Vec<UninitDataEntry>,
+    /* internal_data_remap_indices_list */ Vec<RemapIndices>,
+) {
+    let mut data_name_entries: Vec<DataNameEntry> = vec![];
+    let mut read_only_data_entries: Vec<InitedDataEntry> = vec![];
+    let mut read_write_data_entries: Vec<InitedDataEntry> = vec![];
+    let mut uninit_data_entries: Vec<UninitDataEntry> = vec![];
+
+    let mut internal_data_remap_indices_list: Vec<RemapIndices> =
+        vec![vec![]; data_name_entries_list.len()];
+
+    let module_count = data_name_entries_list.len();
+
+    // add read-only data
+    for submodule_index in 0..module_count {
+        let total_data_internal_index_start = data_name_entries.len();
+        let module_data_internal_index_start =
+            internal_data_remap_indices_list[submodule_index].len();
+        let data_entry_count = read_only_data_entries_list[submodule_index].len();
+
+        data_name_entries.extend(
+            data_name_entries_list[submodule_index][module_data_internal_index_start
+                ..module_data_internal_index_start + data_entry_count]
+                .to_vec(),
+        );
+        internal_data_remap_indices_list[submodule_index].extend(
+            total_data_internal_index_start..total_data_internal_index_start + data_entry_count,
+        );
+        read_only_data_entries.extend(read_only_data_entries_list[submodule_index].to_vec());
+    }
+
+    // add read-write data
+    for submodule_index in 0..module_count {
+        let total_data_internal_index_start = data_name_entries.len();
+        let module_data_internal_index_start =
+            internal_data_remap_indices_list[submodule_index].len();
+        let data_entry_count = read_write_data_entries_list[submodule_index].len();
+
+        data_name_entries.extend(
+            data_name_entries_list[submodule_index][module_data_internal_index_start
+                ..module_data_internal_index_start + data_entry_count]
+                .to_vec(),
+        );
+        internal_data_remap_indices_list[submodule_index].extend(
+            total_data_internal_index_start..total_data_internal_index_start + data_entry_count,
+        );
+        read_write_data_entries.extend(read_write_data_entries_list[submodule_index].to_vec());
+    }
+
+    // add uninit data
+    for submodule_index in 0..module_count {
+        let total_data_internal_index_start = data_name_entries.len();
+        let module_data_internal_index_start =
+            internal_data_remap_indices_list[submodule_index].len();
+        let data_entry_count = uninit_data_entries_list[submodule_index].len();
+
+        data_name_entries.extend(
+            data_name_entries_list[submodule_index][module_data_internal_index_start
+                ..module_data_internal_index_start + data_entry_count]
+                .to_vec(),
+        );
+        internal_data_remap_indices_list[submodule_index].extend(
+            total_data_internal_index_start..total_data_internal_index_start + data_entry_count,
+        );
+        uninit_data_entries.extend(uninit_data_entries_list[submodule_index].to_vec());
+    }
+
+    (
+        data_name_entries,
+        read_only_data_entries,
+        read_write_data_entries,
+        uninit_data_entries,
+        internal_data_remap_indices_list,
+    )
+}
+
+pub fn merge_import_data_entries(
+    data_name_entries: &[DataNameEntry],
+    internal_data_remap_indices_list: &[RemapIndices],
+    import_module_remap_indices_list: &[RemapIndices],
+    import_data_entries_list: &[&[ImportDataEntry]],
+) -> (
+    /* import_data_entries */ Vec<ImportDataEntry>,
+    /* data_public_remap_indices_list */ Vec<RemapIndices>,
+) {
+    // note:
+    // - when adding new `ImportDataEntry`, the propertries "import_module_index"
+    //   needs to be updated.
+    // - when merging data, only the "fullname" will be used to determine if
+    //   the data are the same or not, and the module in which the data
+    //   reside will be ignored.
+
+    let mut entries_merged: Vec<ImportDataEntry> = vec![];
+    let mut import_data_remap_items_list: Vec<Vec<ImportRemapItem>> =
+        vec![vec![]; import_data_entries_list.len()];
+
+    // merge import data list by section data
+    for data_section_type in [
+        DataSectionType::ReadOnly,
+        DataSectionType::ReadWrite,
+        DataSectionType::Uninit,
+    ] {
+        // merge import data list
+        for (submodule_index, entries_source) in import_data_entries_list.iter().enumerate() {
+            let mut indices: Vec<ImportRemapItem> = vec![];
+            // check each entry
+            for entry_source in entries_source
+                .iter()
+                .filter(|item| item.data_section_type == data_section_type)
+            {
+                // check the internal function list first
+                let pos_internal_opt = data_name_entries
+                    .iter()
+                    .position(|item| item.full_name == entry_source.full_name);
+
+                if let Some(pos_internal) = pos_internal_opt {
+                    // the target is a internal function, instead of imported function
+                    // todo: validate the declare type and section type
+                    indices.push(ImportRemapItem::Internal(pos_internal));
+                } else {
+                    // the target is an imported data
+
+                    // check the merged list first
+                    let pos_merged_opt = entries_merged
+                        .iter()
+                        .position(|item| item.full_name == entry_source.full_name);
+
+                    match pos_merged_opt {
+                        Some(pos_merged) => {
+                            // found exists
+                            indices.push(ImportRemapItem::Import(pos_merged));
+                        }
+                        None => {
+                            // add entry
+                            let pos_new = entries_merged.len();
+                            let entry_merged = ImportDataEntry::new(
+                                entry_source.full_name.to_owned(),
+                                import_module_remap_indices_list[submodule_index]
+                                    [entry_source.import_module_index],
+                                entry_source.data_section_type,
+                                entry_source.memory_data_type,
+                            );
+
+                            entries_merged.push(entry_merged);
+                            indices.push(ImportRemapItem::Import(pos_new));
+                        }
+                    }
+                }
+            }
+
+            import_data_remap_items_list[submodule_index].append(&mut indices);
+        }
+    }
+
+    // build the data public index remap list
+
+    let mut data_public_remap_indices_list: Vec<RemapIndices> = vec![];
+    let import_data_count = entries_merged.len();
+    for (remap_items, internal_data_indices) in import_data_remap_items_list
+        .iter()
+        .zip(internal_data_remap_indices_list.iter())
+    {
+        let mut indices = vec![];
+
+        // add the "import" part of the current module
+        for remap_item in remap_items {
+            match remap_item {
+                ImportRemapItem::Import(idx) => {
+                    indices.push(*idx);
+                }
+                ImportRemapItem::Internal(idx) => {
+                    indices.push(idx + import_data_count);
+                }
+            }
+        }
+
+        // add the "internal" part of the current module
+        for data_internal_index in internal_data_indices {
+            indices.push(data_internal_index + import_data_count);
+        }
+
+        data_public_remap_indices_list.push(indices);
+    }
+
+    (entries_merged, data_public_remap_indices_list)
+}
+
 enum VersionCompareResult {
     Equals,
     GreaterThan,
     LessThan,
-    MajorDifferent,
+    Different,
 }
+
+// version conflicts
+// -----------------
+//
+// If a shared module appears multiple times in the dependency tree with
+// different versions and the major version numbers differ, the compiler
+// will complain. However, if the major version numbers are the same, the
+// highest minor version wil be selected.
+//
+// Note that this implies that in the actual application runtime, the minor
+// version of a module might be higher than what the application explicitly
+// declares. This is permissible because minor version updates are expected to
+// maintain backward compatibility.
+//
+// For instance, if an application depends on a module with version 1.4.0, the
+// actual runtime version of that module could be anywhere from 1.4.0 to 1.99.99.
+//
+// For the local and remote file-base shared modules and libraries,
+// because they lack version information, if their sources
+// (e.g., file paths or URLs) do not match, the compilation will fail.
+//
+// zero major version
+// ------------------
+// When a shared module is in beta stage, the major version number can
+// be set to zero.
+// A zero major version indicates that each minor version is incompatible. If an
+// application's dependency tree contains minor version inconsistencies in modules
+// with a zero major version, compilation will fail.
 
 fn compare_version(left: &str, right: &str) -> VersionCompareResult {
     let left_parts = left
@@ -234,98 +559,42 @@ fn compare_version(left: &str, right: &str) -> VersionCompareResult {
         .collect::<Vec<_>>();
 
     if left_parts[0] != right_parts[0] {
-        VersionCompareResult::MajorDifferent
-    } else if left_parts[1] > right_parts[1] {
-        VersionCompareResult::GreaterThan
-    } else if left_parts[1] < right_parts[1] {
-        VersionCompareResult::LessThan
-    } else if left_parts[2] > right_parts[2] {
-        VersionCompareResult::GreaterThan
-    } else if left_parts[2] < right_parts[2] {
-        VersionCompareResult::LessThan
+        // major differ
+        VersionCompareResult::Different
     } else {
-        VersionCompareResult::Equals
-    }
-}
-
-// #[derive(Debug,PartialEq, Clone)]
-// struct ImportFunctionRemap {
-//     items: Vec<ImportFunctionRemapItem>,
-// }
-
-enum ImportFunctionRemapItem {
-    Import(usize),
-    Internal(usize),
-}
-
-pub fn merge_import_function_entries(
-    function_name_entries: &[FunctionNameEntry],
-    import_function_entries: &[&[ImportFunctionEntry]],
-    // remap_module_list: &mut [ModuleEntryRemap],
-    import_module_remap_indices_list: &[RemapIndices],
-    type_remap_indices_list: &[RemapIndices],
-) -> (Vec<ImportFunctionEntry>, Vec<RemapIndices>) {
-    // note:
-    // - when adding new `ImportFunctionEntry`, the propertries "import_module_index"
-    //   and "type_index" need to be updated.
-    // - when merging functions, only the "fullname" will be used to determine if
-    //   the functions are the same or not, and the module in which the functions
-    //   reside will be ignored.
-
-    let mut entries_merged: Vec<ImportFunctionEntry> = vec![];
-    let mut import_function_remap_items_list: Vec<Vec<ImportFunctionRemapItem>> = vec![];
-
-    // merge import function list
-    for (submodule_index, entries_source) in import_function_entries.iter().enumerate() {
-        let mut indices: Vec<ImportFunctionRemapItem> = vec![];
-
-        // check each entry
-        for entry_source in entries_source.iter() {
-            // check the internal function list first
-            let pos_internal_opt = function_name_entries
-                .iter()
-                .position(|item| item.full_name == entry_source.full_name);
-
-            if let Some(pos_internal) = pos_internal_opt {
-                // the target is a internal function, instead of imported function
-                indices.push(ImportFunctionRemapItem::Internal(pos_internal));
+        if left_parts[0] == 0 {
+            // zero major
+            if left_parts[1] != right_parts[1] {
+                // minor differ
+                VersionCompareResult::Different
+            } else if left_parts[2] > right_parts[2] {
+                VersionCompareResult::GreaterThan
+            } else if left_parts[2] < right_parts[2] {
+                VersionCompareResult::LessThan
             } else {
-                // the target is an imported function
-
-                // check the merged list first
-                let pos_merged_opt = entries_merged
-                    .iter()
-                    .position(|item| item.full_name == entry_source.full_name);
-
-                match pos_merged_opt {
-                    Some(pos_merged) => {
-                        // found exists
-                        indices.push(ImportFunctionRemapItem::Import(pos_merged));
-                    }
-                    None => {
-                        // add entry
-                        let pos_new = entries_merged.len();
-                        let entry_merged = ImportFunctionEntry::new(
-                            entry_source.full_name.to_owned(),
-                            import_module_remap_indices_list[submodule_index]
-                                [entry_source.import_module_index],
-                            type_remap_indices_list[submodule_index][entry_source.type_index],
-                        );
-                        entries_merged.push(entry_merged);
-                        indices.push(ImportFunctionRemapItem::Import(pos_new));
-                    }
-                }
+                VersionCompareResult::Equals
+            }
+        } else {
+            // normal major
+            if left_parts[1] > right_parts[1] {
+                VersionCompareResult::GreaterThan
+            } else if left_parts[1] < right_parts[1] {
+                VersionCompareResult::LessThan
+            } else if left_parts[2] > right_parts[2] {
+                VersionCompareResult::GreaterThan
+            } else if left_parts[2] < right_parts[2] {
+                VersionCompareResult::LessThan
+            } else {
+                VersionCompareResult::Equals
             }
         }
-
-        import_function_remap_items_list.push(indices);
     }
+}
 
-    // todo
-    // build the function public index remap list
-    let mut function_public_remap_indices_list: Vec<RemapIndices> = vec![];
-
-    (entries_merged, function_public_remap_indices_list)
+#[derive(Debug, PartialEq, Clone)]
+enum ImportRemapItem {
+    Import(/* the index of merged imported items */ usize),
+    Internal(/* the index of merged internal items */ usize),
 }
 
 #[cfg(test)]
