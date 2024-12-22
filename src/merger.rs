@@ -5,28 +5,27 @@
 // more details in file LICENSE, LICENSE.additional and CONTRIBUTING.
 
 use anc_assembler::entry::ImageCommonEntry;
-use anc_image::entry::FunctionNameEntry;
+use anc_image::{entry::FunctionNameEntry, module_image::ImageType};
 
 use crate::{
     entry_merger::{
-        merge_data_entries, merge_import_data_entries, merge_import_function_entries,
-        merge_import_module_entries, merge_local_variable_list_entries, merge_type_entries,
+        merge_data_entries, merge_external_function_entries, merge_external_library_entries, merge_import_data_entries, merge_import_function_entries, merge_import_module_entries, merge_local_variable_list_entries, merge_type_entries
     },
     LinkerError,
 };
 
 pub type RemapIndices = Vec<usize>;
 
-pub struct ModuleEntryRemap {
-    // pub import_module_remap_indices_list: Vec<RemapIndices>,
+pub struct RemapTable {
     pub type_remap_indices_list: Vec<RemapIndices>,
-    pub local_variable_list_remap_indices_list: Vec<RemapIndices>,
     pub data_public_remap_indices_list: Vec<RemapIndices>,
     pub function_public_remap_indices_list: Vec<RemapIndices>,
+    pub local_variable_list_remap_indices_list: Vec<RemapIndices>,
+    pub external_function_remap_indices_list: Vec<RemapIndices>
 }
 
 /// note that not only submodules under the same module can be merged.
-pub fn merge_modules(submodule_entries: &[ImageCommonEntry]) -> Result<(), LinkerError> {
+pub fn merge_modules(target_module_name: &str, generate_shared_module:bool, submodule_entries: &[ImageCommonEntry]) -> Result<ImageCommonEntry, LinkerError> {
     // merge type entries
     let type_entries_list = submodule_entries
         .iter()
@@ -71,6 +70,13 @@ pub fn merge_modules(submodule_entries: &[ImageCommonEntry]) -> Result<(), Linke
         .map(|item| item.uninit_data_entries.as_slice())
         .collect::<Vec<_>>();
 
+    // the data public index is mixed the following items:
+    // - imported read-only data items
+    // - imported read-write data items
+    // - imported uninitilized data items
+    // - internal read-only data items
+    // - internal read-write data items
+    // - internal uninitilized data items
     let (
         data_name_entries,
         read_only_data_entries,
@@ -90,6 +96,13 @@ pub fn merge_modules(submodule_entries: &[ImageCommonEntry]) -> Result<(), Linke
         .map(|item| item.import_data_entries.as_slice())
         .collect::<Vec<_>>();
 
+    // the data public index is mixed the following items:
+    // - imported read-only data items
+    // - imported read-write data items
+    // - imported uninitilized data items
+    // - internal read-only data items
+    // - internal read-write data items
+    // - internal uninitilized data items
     let (import_data_entries, data_public_remap_indices_list) = merge_import_data_entries(
         &data_name_entries,
         &internal_data_remap_indices_list,
@@ -97,9 +110,25 @@ pub fn merge_modules(submodule_entries: &[ImageCommonEntry]) -> Result<(), Linke
         &import_data_entries_list,
     );
 
-    // todo merge external libraries
+    // merge external libraries
+    let external_library_entries_list = submodule_entries
+        .iter()
+        .map(|item| item.external_library_entries.as_slice())
+        .collect::<Vec<_>>();
+    let (external_library_entries, external_library_remap_indices_list) =
+        merge_external_library_entries(&external_library_entries_list)?;
 
-    // todo merge external functions
+    // merge external functions
+    let external_function_entries_list = submodule_entries
+        .iter()
+        .map(|item| item.external_function_entries.as_slice())
+        .collect::<Vec<_>>();
+    let (external_function_entries, external_function_remap_indices_list) =
+        merge_external_function_entries(
+            &external_library_remap_indices_list,
+            &type_remap_indices_list,
+            &external_function_entries_list,
+        );
 
     // merge function name entries
     let mut function_name_entries: Vec<FunctionNameEntry> = vec![];
@@ -127,7 +156,44 @@ pub fn merge_modules(submodule_entries: &[ImageCommonEntry]) -> Result<(), Linke
             &import_function_entries_list,
         );
 
-    Ok(())
+    // resolve the relocation (remap) data
+
+    let remap_table = RemapTable{
+        type_remap_indices_list,
+        data_public_remap_indices_list,
+        function_public_remap_indices_list,
+        local_variable_list_remap_indices_list,
+        external_function_remap_indices_list,
+    };
+
+    // todo
+    let function_entries = vec![];
+
+    if generate_shared_module {
+        // check imported functons and data.
+        // to ensure there is no imported item from the "current" module.
+        // todo
+    }
+
+    let merged_image_common_entry =  ImageCommonEntry{
+        name: target_module_name.to_owned(),
+        image_type: if generate_shared_module {ImageType::SharedModule} else {ImageType::ObjectFile},
+        import_module_entries,
+        import_function_entries,
+        import_data_entries,
+        type_entries,
+        local_variable_list_entries,
+        function_entries,
+        read_only_data_entries,
+        read_write_data_entries,
+        uninit_data_entries,
+        function_name_entries,
+        data_name_entries,
+        external_library_entries,
+        external_function_entries,
+    };
+
+    Ok(merged_image_common_entry)
 }
 
 #[cfg(test)]
