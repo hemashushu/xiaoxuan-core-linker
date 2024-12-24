@@ -4,8 +4,8 @@
 // the Mozilla Public License version 2.0 and additional exceptions,
 // more details in file LICENSE, LICENSE.additional and CONTRIBUTING.
 
-pub mod entry_merger;
 pub mod merger;
+pub mod linker;
 pub mod object_reader;
 
 use std::fmt::Display;
