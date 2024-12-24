@@ -4,28 +4,36 @@
 // the Mozilla Public License version 2.0 and additional exceptions,
 // more details in file LICENSE, LICENSE.additional and CONTRIBUTING.
 
-use anc_assembler::entry::ImageCommonEntry;
+use anc_assembler::{
+    assembler::create_self_dependent_import_module_entry, entry::ImageCommonEntry,
+};
 use anc_image::{entry::FunctionNameEntry, module_image::ImageType};
 
 use crate::{
     entry_merger::{
-        merge_data_entries, merge_external_function_entries, merge_external_library_entries, merge_import_data_entries, merge_import_function_entries, merge_import_module_entries, merge_local_variable_list_entries, merge_type_entries
+        merge_data_entries, merge_external_function_entries, merge_external_library_entries,
+        merge_function_entries, merge_import_data_entries, merge_import_function_entries,
+        merge_import_module_entries, merge_local_variable_list_entries, merge_type_entries,
     },
-    LinkerError,
+    LinkErrorType, LinkerError,
 };
 
 pub type RemapIndices = Vec<usize>;
 
-pub struct RemapTable {
-    pub type_remap_indices_list: Vec<RemapIndices>,
-    pub data_public_remap_indices_list: Vec<RemapIndices>,
-    pub function_public_remap_indices_list: Vec<RemapIndices>,
-    pub local_variable_list_remap_indices_list: Vec<RemapIndices>,
-    pub external_function_remap_indices_list: Vec<RemapIndices>
+pub struct RemapTable<'a> {
+    pub type_remap_indices: &'a RemapIndices,
+    pub data_public_remap_indices: &'a RemapIndices,
+    pub function_public_remap_indices: &'a RemapIndices,
+    pub local_variable_list_remap_indices: &'a RemapIndices,
+    pub external_function_remap_indices: &'a RemapIndices,
 }
 
 /// note that not only submodules under the same module can be merged.
-pub fn merge_modules(target_module_name: &str, generate_shared_module:bool, submodule_entries: &[ImageCommonEntry]) -> Result<ImageCommonEntry, LinkerError> {
+pub fn merge_modules(
+    target_module_name: &str,
+    generate_shared_module: bool,
+    submodule_entries: &[ImageCommonEntry],
+) -> Result<ImageCommonEntry, LinkerError> {
     // merge type entries
     let type_entries_list = submodule_entries
         .iter()
@@ -156,28 +164,76 @@ pub fn merge_modules(target_module_name: &str, generate_shared_module:bool, subm
             &import_function_entries_list,
         );
 
-    // resolve the relocation (remap) data
+    // merge relocate list entries
+    let relocate_list_entries_list = submodule_entries
+        .iter()
+        .map(|item| item.relocate_list_entries.as_slice())
+        .collect::<Vec<_>>();
 
-    let remap_table = RemapTable{
-        type_remap_indices_list,
-        data_public_remap_indices_list,
-        function_public_remap_indices_list,
-        local_variable_list_remap_indices_list,
-        external_function_remap_indices_list,
-    };
+    let function_entries_list = submodule_entries
+        .iter()
+        .map(|item| item.function_entries.as_slice())
+        .collect::<Vec<_>>();
 
-    // todo
-    let function_entries = vec![];
+    let mut remap_table_list = vec![];
 
-    if generate_shared_module {
-        // check imported functons and data.
-        // to ensure there is no imported item from the "current" module.
-        // todo
+    for submodule_index in 0..submodule_entries.len() {
+        let remap_table = RemapTable {
+            type_remap_indices: &type_remap_indices_list[submodule_index],
+            local_variable_list_remap_indices: &local_variable_list_remap_indices_list
+                [submodule_index],
+            function_public_remap_indices: &function_public_remap_indices_list[submodule_index],
+            data_public_remap_indices: &data_public_remap_indices_list[submodule_index],
+            external_function_remap_indices: &external_function_remap_indices_list[submodule_index],
+        };
+        remap_table_list.push(remap_table);
     }
 
-    let merged_image_common_entry =  ImageCommonEntry{
+    let (function_entries, relocate_list_entries) = merge_function_entries(
+        &relocate_list_entries_list,
+        &function_entries_list,
+        &remap_table_list,
+    );
+
+    // validate the shared-module
+    if generate_shared_module {
+        // check imported functons and data,
+        // to make sure there are no functions or data
+        // imported from the "current" module.
+
+        let the_current_module = create_self_dependent_import_module_entry();
+        let pos_opt = import_module_entries
+            .iter()
+            .position(|item| item == &the_current_module);
+
+        if let Some(pos) = pos_opt {
+            for import_function_entry in &import_function_entries {
+                if import_function_entry.import_module_index == pos {
+                    return Err(LinkerError::new(LinkErrorType::UnresolvedFunctionName(
+                        import_function_entry.full_name.to_owned(),
+                    )));
+                }
+            }
+
+            for import_data_entry in &import_data_entries {
+                if import_data_entry.import_module_index == pos {
+                    return Err(LinkerError::new(LinkErrorType::UnresolvedDataName(
+                        import_data_entry.full_name.to_owned(),
+                    )));
+                }
+            }
+        }
+    }
+
+    let image_type = if generate_shared_module {
+        ImageType::SharedModule
+    } else {
+        ImageType::ObjectFile
+    };
+
+    let merged_image_common_entry = ImageCommonEntry {
         name: target_module_name.to_owned(),
-        image_type: if generate_shared_module {ImageType::SharedModule} else {ImageType::ObjectFile},
+        image_type,
         import_module_entries,
         import_function_entries,
         import_data_entries,
@@ -189,6 +245,7 @@ pub fn merge_modules(target_module_name: &str, generate_shared_module:bool, subm
         uninit_data_entries,
         function_name_entries,
         data_name_entries,
+        relocate_list_entries,
         external_library_entries,
         external_function_entries,
     };
@@ -198,9 +255,15 @@ pub fn merge_modules(target_module_name: &str, generate_shared_module:bool, subm
 
 #[cfg(test)]
 mod tests {
-    use anc_assembler::{assembler::assemble_module_node, entry::ImageCommonEntry};
+    use anc_assembler::{
+        assembler::{assemble_module_node, create_self_dependent_import_module_entry},
+        entry::ImageCommonEntry,
+    };
     use anc_image::entry::{ExternalLibraryEntry, ImportModuleEntry};
+    use anc_isa::{DependencyShare, ModuleDependency};
     use anc_parser_asm::parser::parse_from_str;
+
+    use crate::{entry_merger::merge_import_module_entries, merger::merge_modules};
 
     struct SubModule<'a> {
         fullname: &'a str,
@@ -238,7 +301,165 @@ mod tests {
     }
 
     #[test]
-    fn test_merge_functions() {
+    fn test_merge_type_entries() {
+        //
+    }
+
+    #[test]
+    fn test_merge_local_variable_list_entries() {
+        //
+    }
+
+    #[test]
+    fn test_merge_import_module_entries() {
+        let entries0 = vec![
+            create_self_dependent_import_module_entry(),
+            ImportModuleEntry::new(
+                "network".to_owned(),
+                Box::new(ModuleDependency::Share(Box::new(DependencyShare {
+                    repository: None,
+                    version: "1.0.1".to_owned(),
+                    values: None,
+                    condition: None,
+                }))),
+            ),
+            ImportModuleEntry::new(
+                "encoding".to_owned(),
+                Box::new(ModuleDependency::Share(Box::new(DependencyShare {
+                    repository: None,
+                    version: "2.1.0".to_owned(),
+                    values: None,
+                    condition: None,
+                }))),
+            ),
+        ];
+
+        let entries1 = vec![
+            create_self_dependent_import_module_entry(),
+            ImportModuleEntry::new(
+                // new item
+                "gui".to_owned(),
+                Box::new(ModuleDependency::Share(Box::new(DependencyShare {
+                    repository: None,
+                    version: "1.3.4".to_owned(),
+                    values: None,
+                    condition: None,
+                }))),
+            ),
+            ImportModuleEntry::new(
+                // updated item
+                "encoding".to_owned(),
+                Box::new(ModuleDependency::Share(Box::new(DependencyShare {
+                    repository: None,
+                    version: "2.2.0".to_owned(),
+                    values: None,
+                    condition: None,
+                }))),
+            ),
+            ImportModuleEntry::new(
+                // identical item
+                "network".to_owned(),
+                Box::new(ModuleDependency::Share(Box::new(DependencyShare {
+                    repository: None,
+                    version: "1.0.1".to_owned(),
+                    values: None,
+                    condition: None,
+                }))),
+            ),
+        ];
+
+        let import_module_entries_list = vec![entries0.as_slice(), entries1.as_slice()];
+        let (merged_module_entries_list, import_module_remap_indices_list) =
+            merge_import_module_entries(&import_module_entries_list).unwrap();
+
+        // check merged entries
+        let expected_module_entries_list = vec![
+            create_self_dependent_import_module_entry(),
+            ImportModuleEntry::new(
+                "network".to_owned(),
+                Box::new(ModuleDependency::Share(Box::new(DependencyShare {
+                    repository: None,
+                    version: "1.0.1".to_owned(),
+                    values: None,
+                    condition: None,
+                }))),
+            ),
+            // this item should be the version "2.2.0" instead of "2.1.0".
+            ImportModuleEntry::new(
+                "encoding".to_owned(),
+                Box::new(ModuleDependency::Share(Box::new(DependencyShare {
+                    repository: None,
+                    version: "2.2.0".to_owned(),
+                    values: None,
+                    condition: None,
+                }))),
+            ),
+            // this item is new added.
+            ImportModuleEntry::new(
+                "gui".to_owned(),
+                Box::new(ModuleDependency::Share(Box::new(DependencyShare {
+                    repository: None,
+                    version: "1.3.4".to_owned(),
+                    values: None,
+                    condition: None,
+                }))),
+            ),
+        ];
+
+        assert_eq!(merged_module_entries_list, expected_module_entries_list);
+
+        // check remap list
+        assert_eq!(import_module_remap_indices_list[0], vec![0, 1, 2]);
+        assert_eq!(import_module_remap_indices_list[1], vec![0, 3, 2, 1]);
+    }
+
+    #[test]
+    fn test_merge_import_module_entries_with_name_conflict() {
+        // todo
+    }
+
+    #[test]
+    fn test_merge_import_module_entries_with_source_conflict() {
+        // todo
+    }
+
+    #[test]
+    fn test_merge_import_module_entries_with_version_conflict() {
+        // todo
+    }
+
+    #[test]
+    fn test_merge_import_data() {
+        // todo
+    }
+
+    #[test]
+    fn test_merge_data() {
+        // todo
+    }
+
+    #[test]
+    fn test_merge_external_libraries() {
+        // todo
+    }
+
+    #[test]
+    fn test_merge_external_libraries_with_name_conflict() {
+        // todo
+    }
+
+    #[test]
+    fn test_merge_external_libraries_with_source_conflict() {
+        // todo
+    }
+
+    #[test]
+    fn test_merge_external_libraries_with_version_conflict() {
+        // todo
+    }
+
+    #[test]
+    fn test_merge_import_function() {
         let module_main = SubModule {
             fullname: "hello_mod",
             source: "
@@ -261,8 +482,29 @@ mod tests {
         };
 
         let submodules = vec![module_main, module_math];
-        let common_entries = assemble_submodules(&submodules, &[], &[]);
+        let submodule_entries = assemble_submodules(&submodules, &[], &[]);
+        let merged_entry = merge_modules("merged", false, &submodule_entries).unwrap();
 
-        println!("{:#?}", common_entries);
+        println!("{:#?}", merged_entry);
+    }
+
+    #[test]
+    fn test_merge_function() {
+        // todo
+    }
+
+    #[test]
+    fn test_merge_with_relocate() {
+        // todo
+    }
+
+    #[test]
+    fn test_merge_with_unresolved_function() {
+        // todo
+    }
+
+    #[test]
+    fn test_merge_with_unresolved_data() {
+        // todo
     }
 }

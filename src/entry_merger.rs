@@ -4,14 +4,20 @@
 // the Mozilla Public License version 2.0 and additional exceptions,
 // more details in file LICENSE, LICENSE.additional and CONTRIBUTING.
 
-use anc_image::entry::{
-    DataNameEntry, ExternalFunctionEntry, ExternalLibraryEntry, FunctionNameEntry, ImportDataEntry,
-    ImportFunctionEntry, ImportModuleEntry, InitedDataEntry, LocalVariableListEntry, TypeEntry,
-    UninitDataEntry,
+use anc_image::{
+    entry::{
+        DataNameEntry, ExternalFunctionEntry, ExternalLibraryEntry, FunctionEntry,
+        FunctionNameEntry, ImportDataEntry, ImportFunctionEntry, ImportModuleEntry,
+        InitedDataEntry, LocalVariableListEntry, RelocateListEntry, TypeEntry, UninitDataEntry,
+    },
+    module_image::RelocateType,
 };
 use anc_isa::{DataSectionType, ExternalLibraryDependency, ModuleDependency};
 
-use crate::{merger::RemapIndices, LinkErrorType, LinkerError};
+use crate::{
+    merger::{RemapIndices, RemapTable},
+    LinkErrorType, LinkerError,
+};
 
 pub fn merge_type_entries(
     type_entries_list: &[&[TypeEntry]],
@@ -132,7 +138,9 @@ pub fn merge_import_module_entries(
                             ModuleDependency::Local(_) => {
                                 if matches!(dependency_merged, ModuleDependency::Local(_)) {
                                     return Err(LinkerError::new(
-                                        LinkErrorType::DependentCannotMerge(module_name.to_owned()),
+                                        LinkErrorType::DependentSourceConflict(
+                                            module_name.to_owned(),
+                                        ),
                                     ));
                                 } else {
                                     return Err(LinkerError::new(
@@ -145,7 +153,9 @@ pub fn merge_import_module_entries(
                             ModuleDependency::Remote(_) => {
                                 if matches!(dependency_merged, ModuleDependency::Remote(_)) {
                                     return Err(LinkerError::new(
-                                        LinkErrorType::DependentCannotMerge(module_name.to_owned()),
+                                        LinkErrorType::DependentSourceConflict(
+                                            module_name.to_owned(),
+                                        ),
                                     ));
                                 } else {
                                     return Err(LinkerError::new(
@@ -576,7 +586,9 @@ pub fn merge_external_library_entries(
                                 if matches!(dependency_merged, ExternalLibraryDependency::Local(_))
                                 {
                                     return Err(LinkerError::new(
-                                        LinkErrorType::DependentCannotMerge(module_name.to_owned()),
+                                        LinkErrorType::DependentSourceConflict(
+                                            module_name.to_owned(),
+                                        ),
                                     ));
                                 } else {
                                     return Err(LinkerError::new(
@@ -590,7 +602,9 @@ pub fn merge_external_library_entries(
                                 if matches!(dependency_merged, ExternalLibraryDependency::Remote(_))
                                 {
                                     return Err(LinkerError::new(
-                                        LinkErrorType::DependentCannotMerge(module_name.to_owned()),
+                                        LinkErrorType::DependentSourceConflict(
+                                            module_name.to_owned(),
+                                        ),
                                     ));
                                 } else {
                                     return Err(LinkerError::new(
@@ -724,6 +738,76 @@ pub fn merge_external_function_entries(
     (entries_merged, external_function_remap_indices_list)
 }
 
+pub fn merge_function_entries(
+    relocate_list_entries_list: &[&[RelocateListEntry]],
+    function_entries_list: &[&[FunctionEntry]],
+    remap_table_list: &[RemapTable],
+) -> (Vec<FunctionEntry>, Vec<RelocateListEntry>) {
+    let mut merged_function_entries = vec![];
+
+    for ((function_entries, relocate_list_entries), remap_table) in function_entries_list
+        .iter()
+        .zip(relocate_list_entries_list.iter())
+        .zip(remap_table_list.iter())
+    {
+        for (function_entry, relocate_list_entry) in
+            function_entries.iter().zip(relocate_list_entries.iter())
+        {
+            let type_index = remap_table.type_remap_indices[function_entry.type_index];
+            let local_variable_list_index = remap_table.local_variable_list_remap_indices
+                [function_entry.local_variable_list_index];
+
+            let mut code = function_entry.code.clone();
+
+            // update each relocate item
+            for relocate_entry in &relocate_list_entry.relocate_entries {
+                let code_piece =
+                    &mut code[relocate_entry.code_offset..relocate_entry.code_offset + 4];
+
+                let value_ptr = code_piece.as_mut_ptr() as *mut u32;
+                let value_source = unsafe { *value_ptr } as usize;
+
+                // let value_source_data: [u8; 4] = code_piece
+                //     .try_into()
+                //     .unwrap();
+                // let value_source = u32::from_le_bytes(value_source_data) as usize;
+
+                let value_relocated = match relocate_entry.relocate_type {
+                    RelocateType::TypeIndex => remap_table.type_remap_indices[value_source],
+                    RelocateType::LocalVariableListIndex => {
+                        remap_table.local_variable_list_remap_indices[value_source]
+                    }
+                    RelocateType::FunctionPublicIndex => {
+                        remap_table.function_public_remap_indices[value_source]
+                    }
+                    RelocateType::ExternalFunctionIndex => {
+                        remap_table.external_function_remap_indices[value_source]
+                    }
+                    RelocateType::DataPublicIndex => {
+                        remap_table.data_public_remap_indices[value_source]
+                    }
+                };
+
+                // update
+                unsafe { *value_ptr = value_relocated as u32 };
+
+                // let value_relocated_data = (value_relocated as u32).to_le_bytes();
+                // code_piece = &mut value_relocated_data;
+            }
+
+            let function_entry = FunctionEntry::new(type_index, local_variable_list_index, code);
+            merged_function_entries.push(function_entry);
+        }
+    }
+
+    let merged_relocate_list_entries = relocate_list_entries_list
+        .iter()
+        .flat_map(|item| item.to_vec())
+        .collect::<Vec<_>>();
+
+    (merged_function_entries, merged_relocate_list_entries)
+}
+
 enum VersionCompareResult {
     Equals,
     GreaterThan,
@@ -807,141 +891,4 @@ fn compare_version(left: &str, right: &str) -> VersionCompareResult {
 enum ImportRemapItem {
     Import(/* the index of merged imported items */ usize),
     Internal(/* the index of merged internal items */ usize),
-}
-
-#[cfg(test)]
-mod tests {
-    use anc_assembler::assembler::create_self_dependent_import_module_entry;
-    use anc_image::entry::ImportModuleEntry;
-    use anc_isa::{DependencyShare, ModuleDependency};
-
-    use super::merge_import_module_entries;
-
-    #[test]
-    fn test_merge_type_entries() {
-        //
-    }
-
-    #[test]
-    fn test_merge_local_variable_list_entries() {
-        //
-    }
-
-    #[test]
-    fn test_merge_import_module_entries() {
-        let entries0 = vec![
-            create_self_dependent_import_module_entry(),
-            ImportModuleEntry::new(
-                "network".to_owned(),
-                Box::new(ModuleDependency::Share(Box::new(DependencyShare {
-                    repository: None,
-                    version: "1.0.1".to_owned(),
-                    values: None,
-                    condition: None,
-                }))),
-            ),
-            ImportModuleEntry::new(
-                "encoding".to_owned(),
-                Box::new(ModuleDependency::Share(Box::new(DependencyShare {
-                    repository: None,
-                    version: "2.1.0".to_owned(),
-                    values: None,
-                    condition: None,
-                }))),
-            ),
-        ];
-
-        let entries1 = vec![
-            create_self_dependent_import_module_entry(),
-            ImportModuleEntry::new(
-                // new item
-                "gui".to_owned(),
-                Box::new(ModuleDependency::Share(Box::new(DependencyShare {
-                    repository: None,
-                    version: "1.3.4".to_owned(),
-                    values: None,
-                    condition: None,
-                }))),
-            ),
-            ImportModuleEntry::new(
-                // updated item
-                "encoding".to_owned(),
-                Box::new(ModuleDependency::Share(Box::new(DependencyShare {
-                    repository: None,
-                    version: "2.2.0".to_owned(),
-                    values: None,
-                    condition: None,
-                }))),
-            ),
-            ImportModuleEntry::new(
-                // identical item
-                "network".to_owned(),
-                Box::new(ModuleDependency::Share(Box::new(DependencyShare {
-                    repository: None,
-                    version: "1.0.1".to_owned(),
-                    values: None,
-                    condition: None,
-                }))),
-            ),
-        ];
-
-        let import_module_entries_list = vec![entries0.as_slice(), entries1.as_slice()];
-        let (merged_module_entries_list, import_module_remap_indices_list) =
-            merge_import_module_entries(&import_module_entries_list).unwrap();
-
-        // check merged entries
-        let expected_module_entries_list = vec![
-            create_self_dependent_import_module_entry(),
-            ImportModuleEntry::new(
-                "network".to_owned(),
-                Box::new(ModuleDependency::Share(Box::new(DependencyShare {
-                    repository: None,
-                    version: "1.0.1".to_owned(),
-                    values: None,
-                    condition: None,
-                }))),
-            ),
-            // this item should be the version "2.2.0" instead of "2.1.0".
-            ImportModuleEntry::new(
-                "encoding".to_owned(),
-                Box::new(ModuleDependency::Share(Box::new(DependencyShare {
-                    repository: None,
-                    version: "2.2.0".to_owned(),
-                    values: None,
-                    condition: None,
-                }))),
-            ),
-            // this item is new added.
-            ImportModuleEntry::new(
-                "gui".to_owned(),
-                Box::new(ModuleDependency::Share(Box::new(DependencyShare {
-                    repository: None,
-                    version: "1.3.4".to_owned(),
-                    values: None,
-                    condition: None,
-                }))),
-            ),
-        ];
-
-        assert_eq!(merged_module_entries_list, expected_module_entries_list);
-
-        // check remap list
-        assert_eq!(import_module_remap_indices_list[0], vec![0, 1, 2]);
-        assert_eq!(import_module_remap_indices_list[1], vec![0, 3, 2, 1]);
-    }
-
-    #[test]
-    fn test_merge_import_module_entries_with_name_conflict() {
-        // todo
-    }
-
-    #[test]
-    fn test_merge_import_module_entries_with_source_conflict() {
-        // todo
-    }
-
-    #[test]
-    fn test_merge_import_module_entries_with_major_version_conflict() {
-        // todo
-    }
 }

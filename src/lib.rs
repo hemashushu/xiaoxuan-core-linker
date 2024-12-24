@@ -25,7 +25,7 @@ pub enum LinkErrorType {
     /// Modules/libraries that lack version information (such as "local" and "remote")
     /// cannot be merged if only the names are the same but the sources
     /// (e.g. file paths and commit/tags) do not match.
-    DependentCannotMerge(/* module/library name */ String),
+    DependentSourceConflict(/* module/library name */ String),
 
     /// Modules/libraries with the same name cannot be merged if
     /// their versions conflict.
@@ -49,7 +49,7 @@ impl Display for LinkerError {
         match &self .error_type {
             LinkErrorType::CannotLoadMoudle(module_name, message) => write!(f, "Failed to load module \"{module_name}\", message: \"{message}\""),
             LinkErrorType::DependentNameConflict(module_name) =>write!(f, "Dependent modules \"{module_name}\" cannot be merged because there are different types."),
-            LinkErrorType::DependentCannotMerge(module_name) => write!(f, "Dependent modules \"{module_name}\" cannot be merged because the sources are different."),
+            LinkErrorType::DependentSourceConflict(module_name) => write!(f, "Dependent modules \"{module_name}\" cannot be merged because the sources are different."),
             LinkErrorType::DependentVersionConflict(module_name) => write!(f, "Dependent modules \"{module_name}\" cannot be merged because the major versions are different."),
             LinkErrorType::UnresolvedFunctionName(function_name) => write!(f, "The imported function \"{function_name}\" cannot be found."),
             LinkErrorType::UnresolvedDataName(data_name) => write!(f, "The imported data \"{data_name}\" cannot be found."),

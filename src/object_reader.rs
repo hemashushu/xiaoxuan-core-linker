@@ -65,6 +65,11 @@ pub fn read_common_module_image(
         .get_optional_data_name_section()
         .unwrap_or_default()
         .convert_to_entries();
+    let relocate_list_entries = module_image
+        .get_optional_relocate_section()
+        .unwrap_or_default()
+        .convert_to_entries();
+
     let common_property_section = module_image.get_common_property_section();
 
     let image_common_entry = ImageCommonEntry {
@@ -81,6 +86,7 @@ pub fn read_common_module_image(
         uninit_data_entries,
         function_name_entries,
         data_name_entries,
+        relocate_list_entries,
         external_library_entries,
         external_function_entries,
     };
