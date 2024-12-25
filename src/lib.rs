@@ -4,8 +4,8 @@
 // the Mozilla Public License version 2.0 and additional exceptions,
 // more details in file LICENSE, LICENSE.additional and CONTRIBUTING.
 
-pub mod merger;
 pub mod linker;
+pub mod merger;
 pub mod object_reader;
 
 use std::fmt::Display;
@@ -36,6 +36,9 @@ pub enum LinkErrorType {
 
     /// The imported data cannot be found.
     UnresolvedDataName(/* data name */ String),
+
+    UnresolvedDependencyModule(String),
+    UnresolvedDependencyExternalLibrary(String),
 }
 
 impl LinkerError {
@@ -53,6 +56,8 @@ impl Display for LinkerError {
             LinkErrorType::DependentVersionConflict(module_name) => write!(f, "Dependent modules \"{module_name}\" cannot be merged because the major versions are different."),
             LinkErrorType::UnresolvedFunctionName(function_name) => write!(f, "The imported function \"{function_name}\" cannot be found."),
             LinkErrorType::UnresolvedDataName(data_name) => write!(f, "The imported data \"{data_name}\" cannot be found."),
+            LinkErrorType::UnresolvedDependencyModule(module_name) => write!(f, "The dependency module \"{module_name}\" cannot be found."),
+            LinkErrorType::UnresolvedDependencyExternalLibrary(external_library_name) => write!(f, "The dependency external library \"{external_library_name}\" cannot be found."),
         }
     }
 }

@@ -18,6 +18,17 @@ use crate::{
     LinkErrorType, LinkerError,
 };
 
+/// Map the index in a module to the new index in the merged module
+///
+/// e.g.
+///
+/// | pub index in an original module | index in the merged module |
+/// |---------------------------------|----------------------------|
+/// | 0                               | 0                          |
+/// | 1                               | 2                          |
+/// | 2                               | 6                          |
+/// | 3                               | 1                          |
+/// | N                               | X                          |
 pub type RemapIndices = Vec<usize>;
 
 pub struct RemapTable<'a> {
@@ -598,12 +609,12 @@ fn add(left:i32, right:i32) -> i32 {        // type 2, local 3
         let module0 = SubModule {
             fullname: "hello",
             source: r#"
-import data module::middle::d0:i32
-import data module::middle::d2:i32
-import data module::middle::d4:i32
-import data module::base::d1:i32
-import data module::base::d3:i32
-import data module::base::d5:i32
+import data module::middle::d0 type i32
+import data module::middle::d2 type i32
+import data module::middle::d4 type i32
+import data module::base::d1 type i32
+import data module::base::d3 type i32
+import data module::base::d5 type i32
 
 fn main() {
     data_load_i32_s(d0)
@@ -618,9 +629,9 @@ fn main() {
         let module1 = SubModule {
             fullname: "hello::middle",
             source: r#"
-import data module::base::d5:i32
-import data module::base::d1:i32
-import data module::base::d3:i32
+import data module::base::d5 type i32
+import data module::base::d1 type i32
+import data module::base::d3 type i32
 
 readonly data d0:i32 = 0x11
 uninit data d4:i32
@@ -1141,8 +1152,8 @@ fn do_this() {
         let module0 = SubModule {
             fullname: "hello",
             source: r#"
-import data module::world::d0:i32
-import data module::world::d1:i32
+import data module::world::d0 type i32
+import data module::world::d1 type i32
 
 fn main()->i32 {
     nop()

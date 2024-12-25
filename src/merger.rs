@@ -248,11 +248,11 @@ pub fn merge_import_function_entries(
     //   reside will be ignored.
 
     let mut entries_merged: Vec<ImportFunctionEntry> = vec![];
-    let mut import_function_remap_items_list: Vec<Vec<ImportRemapItem>> = vec![];
+    let mut import_function_remap_table_list: Vec<ImportRemapTable> = vec![];
 
     // merge import function list
     for (submodule_index, entries_source) in import_function_entries_list.iter().enumerate() {
-        let mut indices: Vec<ImportRemapItem> = vec![];
+        let mut import_remap_table: ImportRemapTable = vec![];
 
         // check each entry
         for entry_source in entries_source.iter() {
@@ -269,7 +269,7 @@ pub fn merge_import_function_entries(
             if let Some(pos_internal) = pos_internal_opt {
                 // the target is a internal function, instead of imported function
                 // todo: validate the declare type and the actual type
-                indices.push(ImportRemapItem::Internal(pos_internal));
+                import_remap_table.push(ImportRemapItem::Internal(pos_internal));
             } else {
                 // the target is an imported function
 
@@ -282,7 +282,7 @@ pub fn merge_import_function_entries(
                     Some(pos_merged) => {
                         // found exists
                         // todo: check declare type
-                        indices.push(ImportRemapItem::Import(pos_merged));
+                        import_remap_table.push(ImportRemapItem::Import(pos_merged));
                     }
                     None => {
                         // add entry
@@ -293,19 +293,19 @@ pub fn merge_import_function_entries(
                             merged_type_index,
                         );
                         entries_merged.push(entry_merged);
-                        indices.push(ImportRemapItem::Import(pos_new));
+                        import_remap_table.push(ImportRemapItem::Import(pos_new));
                     }
                 }
             }
         }
 
-        import_function_remap_items_list.push(indices);
+        import_function_remap_table_list.push(import_remap_table);
     }
 
     // build the function public index remap list
     let mut function_public_remap_indices_list: Vec<RemapIndices> = vec![];
     let import_function_count = entries_merged.len();
-    for (remap_items, internal_function_indices) in import_function_remap_items_list
+    for (remap_items, internal_function_indices) in import_function_remap_table_list
         .iter()
         .zip(internal_function_remap_indices_list.iter())
     {
@@ -450,7 +450,7 @@ pub fn merge_import_data_entries(
     //   reside will be ignored.
 
     let mut entries_merged: Vec<ImportDataEntry> = vec![];
-    let mut import_data_remap_items_list: Vec<Vec<ImportRemapItem>> =
+    let mut import_data_remap_table_list: Vec<ImportRemapTable> =
         vec![vec![]; import_data_entries_list.len()];
 
     // merge import data list by section data
@@ -461,7 +461,8 @@ pub fn merge_import_data_entries(
     ] {
         // merge import data list
         for (submodule_index, entries_source) in import_data_entries_list.iter().enumerate() {
-            let mut indices: Vec<ImportRemapItem> = vec![];
+            let mut import_remap_table: ImportRemapTable = vec![];
+
             // check each entry
             for entry_source in entries_source
                 .iter()
@@ -475,7 +476,7 @@ pub fn merge_import_data_entries(
                 if let Some(pos_internal) = pos_internal_opt {
                     // the target is a internal function, instead of imported function
                     // todo: validate the declare type and section type
-                    indices.push(ImportRemapItem::Internal(pos_internal));
+                    import_remap_table.push(ImportRemapItem::Internal(pos_internal));
                 } else {
                     // the target is an imported data
 
@@ -487,7 +488,7 @@ pub fn merge_import_data_entries(
                     match pos_merged_opt {
                         Some(pos_merged) => {
                             // found exists
-                            indices.push(ImportRemapItem::Import(pos_merged));
+                            import_remap_table.push(ImportRemapItem::Import(pos_merged));
                         }
                         None => {
                             // add entry
@@ -503,13 +504,13 @@ pub fn merge_import_data_entries(
                             );
 
                             entries_merged.push(entry_merged);
-                            indices.push(ImportRemapItem::Import(pos_new));
+                            import_remap_table.push(ImportRemapItem::Import(pos_new));
                         }
                     }
                 }
             }
 
-            import_data_remap_items_list[submodule_index].append(&mut indices);
+            import_data_remap_table_list[submodule_index].append(&mut import_remap_table);
         }
     }
 
@@ -517,7 +518,7 @@ pub fn merge_import_data_entries(
 
     let mut data_public_remap_indices_list: Vec<RemapIndices> = vec![];
     let import_data_count = entries_merged.len();
-    for (remap_items, internal_data_indices) in import_data_remap_items_list
+    for (remap_items, internal_data_indices) in import_data_remap_table_list
         .iter()
         .zip(internal_data_remap_indices_list.iter())
     {
@@ -886,6 +887,21 @@ fn compare_version(left: &str, right: &str) -> VersionCompareResult {
         }
     }
 }
+
+/// the map table of importing items to the merged items.
+///
+/// e.g.
+///
+/// | import item   | index of import items in the merged module or |
+/// |               | internal index of items in the merged module  |
+/// |---------------|-----------------------------------------------|
+/// | hello::foo    | merged_import_items[0]                        |
+/// | hello::bar    | merged_import_items[2]                        |
+/// | hello::baz    | merged_items[5]                               |
+/// | world::abc    | merged_import_items[3]                        |
+/// | world::def    | merged_import_items[1]                        |
+/// | world::xyz    | merged_items[2]                               |
+type ImportRemapTable = Vec<ImportRemapItem>;
 
 #[derive(Debug, PartialEq, Clone)]
 enum ImportRemapItem {
