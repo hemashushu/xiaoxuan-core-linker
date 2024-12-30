@@ -1,6 +1,6 @@
 [package]
 name = "linker"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 
 [dependencies]
@@ -8,7 +8,7 @@ anc-isa = { path = "../xiaoxuan-core-isa" }
 anc-image = { path = "../xiaoxuan-core-image" }
 anc-parser-asm = { path = "../xiaoxuan-core-assembly/crates/parser" }
 anc-assembler = { path = "../xiaoxuan-core-assembly/crates/assembler" }
-ason = "1.3.0"
+ason = "1.4.0"
 
 [dev-dependencies]
 pretty_assertions = "1.4.0"

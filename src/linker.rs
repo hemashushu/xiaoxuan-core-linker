@@ -4,10 +4,11 @@
 // the Mozilla Public License version 2.0 and additional exceptions,
 // more details in file LICENSE, LICENSE.additional and CONTRIBUTING.
 
-use anc_assembler::{
-    assembler::create_self_dependent_import_module_entry, entry::ImageCommonEntry,
+use anc_assembler::assembler::create_self_reference_import_module_entry;
+use anc_image::{
+    entry::{ExportFunctionEntry, ImageCommonEntry},
+    module_image::ImageType,
 };
-use anc_image::{entry::FunctionNameEntry, module_image::ImageType};
 
 use crate::{
     merger::{
@@ -39,7 +40,8 @@ pub struct RemapTable<'a> {
     pub external_function_remap_indices: &'a RemapIndices,
 }
 
-/// note that not only submodules under the same module can be merged.
+/// Merges submodules or modules.
+/// It's something like the "static linking".
 pub fn link_modules(
     target_module_name: &str,
     generate_shared_module: bool,
@@ -68,10 +70,10 @@ pub fn link_modules(
     let (import_module_entries, import_module_remap_indices_list) =
         merge_import_module_entries(&import_module_entries_list)?;
 
-    // merge data name and data entries
-    let data_name_entries_list = submodule_entries
+    // merge export data entries and data entries
+    let export_data_entries_list = submodule_entries
         .iter()
-        .map(|item| item.data_name_entries.as_slice())
+        .map(|item| item.export_data_entries.as_slice())
         .collect::<Vec<_>>();
 
     let read_only_data_entries_list = submodule_entries
@@ -97,13 +99,13 @@ pub fn link_modules(
     // - internal read-write data items
     // - internal uninitilized data items
     let (
-        data_name_entries,
+        export_data_entries,
         read_only_data_entries,
         read_write_data_entries,
         uninit_data_entries,
         internal_data_remap_indices_list,
     ) = merge_data_entries(
-        &data_name_entries_list,
+        &export_data_entries_list,
         &read_only_data_entries_list,
         &read_write_data_entries_list,
         &uninit_data_entries_list,
@@ -123,11 +125,11 @@ pub fn link_modules(
     // - internal read-write data items
     // - internal uninitilized data items
     let (import_data_entries, data_public_remap_indices_list) = merge_import_data_entries(
-        &data_name_entries,
+        &export_data_entries,
         &internal_data_remap_indices_list,
         &import_module_remap_indices_list,
         &import_data_entries_list,
-    );
+    )?;
 
     // merge external libraries
     let external_library_entries_list = submodule_entries
@@ -150,15 +152,15 @@ pub fn link_modules(
         );
 
     // merge function name entries
-    let mut function_name_entries: Vec<FunctionNameEntry> = vec![];
+    let mut export_function_entries: Vec<ExportFunctionEntry> = vec![];
     let mut internal_function_remap_indices_list: Vec<RemapIndices> = vec![];
 
     for submodule_entry in submodule_entries {
-        let indices = (function_name_entries.len()
-            ..function_name_entries.len() + submodule_entry.function_name_entries.len())
+        let indices = (export_function_entries.len()
+            ..export_function_entries.len() + submodule_entry.export_function_entries.len())
             .collect::<Vec<_>>();
         internal_function_remap_indices_list.push(indices);
-        function_name_entries.extend(submodule_entry.function_name_entries.to_vec());
+        export_function_entries.extend(submodule_entry.export_function_entries.to_vec());
     }
 
     // merge import function entries
@@ -168,12 +170,12 @@ pub fn link_modules(
         .collect::<Vec<_>>();
     let (import_function_entries, function_public_remap_indices_list) =
         merge_import_function_entries(
-            &function_name_entries,
+            &export_function_entries,
             &internal_function_remap_indices_list,
             &import_module_remap_indices_list,
             &type_remap_indices_list,
             &import_function_entries_list,
-        );
+        )?;
 
     // merge relocate list entries
     let relocate_list_entries_list = submodule_entries
@@ -210,9 +212,9 @@ pub fn link_modules(
     if generate_shared_module {
         // check imported functons and data,
         // to make sure there are no functions or data
-        // imported from the "current" module.
+        // imported from the current module.
 
-        let the_current_module = create_self_dependent_import_module_entry();
+        let the_current_module = create_self_reference_import_module_entry();
         let pos_opt = import_module_entries
             .iter()
             .position(|item| item == &the_current_module);
@@ -220,7 +222,7 @@ pub fn link_modules(
         if let Some(pos) = pos_opt {
             for import_function_entry in &import_function_entries {
                 if import_function_entry.import_module_index == pos {
-                    return Err(LinkerError::new(LinkErrorType::UnresolvedFunctionName(
+                    return Err(LinkerError::new(LinkErrorType::FunctionNotFound(
                         import_function_entry.full_name.to_owned(),
                     )));
                 }
@@ -228,7 +230,7 @@ pub fn link_modules(
 
             for import_data_entry in &import_data_entries {
                 if import_data_entry.import_module_index == pos {
-                    return Err(LinkerError::new(LinkErrorType::UnresolvedDataName(
+                    return Err(LinkerError::new(LinkErrorType::DataNotFound(
                         import_data_entry.full_name.to_owned(),
                     )));
                 }
@@ -254,8 +256,8 @@ pub fn link_modules(
         read_only_data_entries,
         read_write_data_entries,
         uninit_data_entries,
-        function_name_entries,
-        data_name_entries,
+        export_function_entries,
+        export_data_entries,
         relocate_list_entries,
         external_library_entries,
         external_function_entries,
@@ -268,50 +270,46 @@ pub fn link_modules(
 mod tests {
     use pretty_assertions::assert_eq;
 
-    use anc_assembler::{
-        assembler::{assemble_module_node, create_self_dependent_import_module_entry},
-        entry::ImageCommonEntry,
+    use anc_assembler::assembler::{
+        assemble_module_node, create_self_reference_import_module_entry,
     };
     use anc_image::{
         bytecode_reader::format_bytecode_as_text,
         entry::{
-            DataNameEntry, ExternalFunctionEntry, ExternalLibraryEntry, FunctionNameEntry,
-            ImportModuleEntry, InitedDataEntry, LocalVariableEntry, LocalVariableListEntry,
-            RelocateEntry, RelocateListEntry, TypeEntry, UninitDataEntry,
+            ExportDataEntry, ExportFunctionEntry, ExternalFunctionEntry, ExternalLibraryEntry,
+            ImageCommonEntry, ImportModuleEntry, InitedDataEntry, LocalVariableEntry,
+            LocalVariableListEntry, RelocateEntry, RelocateListEntry, TypeEntry, UninitDataEntry,
         },
-        module_image::RelocateType,
+        module_image::{RelocateType, Visibility},
     };
-    use anc_isa::{DependencyShare, ExternalLibraryDependency, ModuleDependency, OperandDataType};
+    use anc_isa::{
+        DataSectionType, DependencyShare, ExternalLibraryDependency, ModuleDependency,
+        OperandDataType,
+    };
     use anc_parser_asm::parser::parse_from_str;
 
     use crate::{
         linker::link_modules, merger::merge_import_module_entries, LinkErrorType, LinkerError,
     };
 
-    struct SubModule<'a> {
-        fullname: &'a str,
-        source: &'a str,
-    }
-
     fn assemble_submodules(
-        submodules: &[SubModule],
+        submodules: &[(/* fullname */ &str, /* source */ &str)],
         import_module_entries: &[ImportModuleEntry],
         external_library_entries: &[ExternalLibraryEntry],
     ) -> Vec<ImageCommonEntry> {
-        // let mut module_images = vec![];
         let mut common_entries = vec![];
 
-        for submodule in submodules {
-            let module_node = match parse_from_str(submodule.source) {
+        for (full_name, source_code) in submodules {
+            let module_node = match parse_from_str(source_code) {
                 Ok(node) => node,
                 Err(parser_error) => {
-                    panic!("{}", parser_error.with_source(submodule.source));
+                    panic!("{}", parser_error.with_source(source_code));
                 }
             };
 
             let image_common_entry = assemble_module_node(
                 &module_node,
-                &submodule.fullname,
+                full_name,
                 import_module_entries,
                 external_library_entries,
             )
@@ -325,9 +323,9 @@ mod tests {
 
     #[test]
     fn test_merge_type_and_local_variable_list_entries() {
-        let module0 = SubModule {
-            fullname: "hello",
-            source: r#"
+        let module0 = (
+            "hello",
+            r#"
 fn main()->i32 [a:i32] {                    // type 1, local 1
     block (
         m:i32=imm_i32(0x11),
@@ -342,11 +340,11 @@ fn main()->i32 [a:i32] {                    // type 1, local 1
         nop()
 }
 "#,
-        };
+        );
 
-        let module1 = SubModule {
-            fullname: "hello::world",
-            source: r#"
+        let module1 = (
+            "hello::world",
+            r#"
 fn add(left:i32, right:i32) -> i32 {        // type 2, local 3
     if -> i32                               // type 1, local 0
         eqz_i32(imm_i32(0x19))
@@ -366,7 +364,7 @@ fn add(left:i32, right:i32) -> i32 {        // type 2, local 3
     }
 }
 "#,
-        };
+        );
 
         let submodules = vec![module0, module1];
         let submodule_entries = assemble_submodules(&submodules, &[], &[]);
@@ -489,7 +487,7 @@ fn add(left:i32, right:i32) -> i32 {        // type 2, local 3
     #[test]
     fn test_merge_import_module_entries() {
         let entries0 = vec![
-            create_self_dependent_import_module_entry(),
+            create_self_reference_import_module_entry(),
             ImportModuleEntry::new(
                 "network".to_owned(),
                 Box::new(ModuleDependency::Share(Box::new(DependencyShare {
@@ -511,7 +509,7 @@ fn add(left:i32, right:i32) -> i32 {        // type 2, local 3
         ];
 
         let entries1 = vec![
-            create_self_dependent_import_module_entry(),
+            create_self_reference_import_module_entry(),
             ImportModuleEntry::new(
                 // new item
                 "gui".to_owned(),
@@ -550,7 +548,7 @@ fn add(left:i32, right:i32) -> i32 {        // type 2, local 3
 
         // check merged entries
         let expected_module_entries_list = vec![
-            create_self_dependent_import_module_entry(),
+            create_self_reference_import_module_entry(),
             ImportModuleEntry::new(
                 "network".to_owned(),
                 Box::new(ModuleDependency::Share(Box::new(DependencyShare {
@@ -606,15 +604,15 @@ fn add(left:i32, right:i32) -> i32 {        // type 2, local 3
 
     #[test]
     fn test_merge_import_data() {
-        let module0 = SubModule {
-            fullname: "hello",
-            source: r#"
-import data module::middle::d0 type i32
+        let module0 = (
+            "hello",
+            r#"
+import readonly data module::middle::d0 type i32
 import data module::middle::d2 type i32
-import data module::middle::d4 type i32
-import data module::base::d1 type i32
+import uninit data module::middle::d4 type i32
+import readonly data module::base::d1 type i32
 import data module::base::d3 type i32
-import data module::base::d5 type i32
+import uninit data module::base::d5 type i32
 
 fn main() {
     data_load_i32_s(d0)
@@ -624,13 +622,13 @@ fn main() {
     data_load_i32_s(d4)
     data_load_i32_s(d5)
 }"#,
-        };
+        );
 
-        let module1 = SubModule {
-            fullname: "hello::middle",
-            source: r#"
-import data module::base::d5 type i32
-import data module::base::d1 type i32
+        let module1 = (
+            "hello::middle",
+            r#"
+import uninit data module::base::d5 type i32
+import readonly data module::base::d1 type i32
 import data module::base::d3 type i32
 
 readonly data d0:i32 = 0x11
@@ -645,11 +643,11 @@ fn foo() {
     data_load_i32_s(d2)
     data_load_i32_s(d0)
 }"#,
-        };
+        );
 
-        let module2 = SubModule {
-            fullname: "hello::base",
-            source: r#"
+        let module2 = (
+            "hello::base",
+            r#"
 data d3:i32 = 0x19
 uninit data d5:i32
 readonly data d1:i32 = 0x17
@@ -659,7 +657,7 @@ fn bar() {
     data_load_i32_s(d3)
     data_load_i32_s(d5)
 }"#,
-        };
+        );
 
         let submodules = vec![module0, module1, module2];
         let submodule_entries = assemble_submodules(&submodules, &[], &[]);
@@ -668,7 +666,7 @@ fn bar() {
         // import modules
         assert_eq!(
             merged_entry.import_module_entries,
-            vec![create_self_dependent_import_module_entry()]
+            vec![create_self_reference_import_module_entry()]
         );
 
         // import data
@@ -734,14 +732,38 @@ fn bar() {
 
         // data name
         assert_eq!(
-            merged_entry.data_name_entries,
+            merged_entry.export_data_entries,
             vec![
-                DataNameEntry::new("hello::middle::d0".to_owned(), false),
-                DataNameEntry::new("hello::base::d1".to_owned(), false),
-                DataNameEntry::new("hello::middle::d2".to_owned(), false),
-                DataNameEntry::new("hello::base::d3".to_owned(), false),
-                DataNameEntry::new("hello::middle::d4".to_owned(), false),
-                DataNameEntry::new("hello::base::d5".to_owned(), false),
+                ExportDataEntry::new(
+                    "hello::middle::d0".to_owned(),
+                    Visibility::Private,
+                    DataSectionType::ReadOnly
+                ),
+                ExportDataEntry::new(
+                    "hello::base::d1".to_owned(),
+                    Visibility::Private,
+                    DataSectionType::ReadOnly
+                ),
+                ExportDataEntry::new(
+                    "hello::middle::d2".to_owned(),
+                    Visibility::Private,
+                    DataSectionType::ReadWrite
+                ),
+                ExportDataEntry::new(
+                    "hello::base::d3".to_owned(),
+                    Visibility::Private,
+                    DataSectionType::ReadWrite
+                ),
+                ExportDataEntry::new(
+                    "hello::middle::d4".to_owned(),
+                    Visibility::Private,
+                    DataSectionType::Uninit
+                ),
+                ExportDataEntry::new(
+                    "hello::base::d5".to_owned(),
+                    Visibility::Private,
+                    DataSectionType::Uninit
+                ),
             ]
         );
 
@@ -801,9 +823,9 @@ fn bar() {
 
     #[test]
     fn test_merge_external_function() {
-        let module0 = SubModule {
-            fullname: "hello",
-            source: r#"
+        let module0 = (
+            "hello",
+            r#"
 external fn abc::do_something()
 external fn def::do_this(i32) -> i32
 
@@ -812,11 +834,11 @@ fn main() {
     extcall(do_this, imm_i32(0x11))
 }
 "#,
-        };
+        );
 
-        let module1 = SubModule {
-            fullname: "hello::world",
-            source: r#"
+        let module1 = (
+            "hello::world",
+            r#"
 external fn def::do_that(i32,i32) -> i32
 external fn abc::do_something()
 
@@ -828,7 +850,7 @@ fn bar() -> i32 {
     extcall(do_that, imm_i32(0x13), imm_i32(0x17))
 }
 "#,
-        };
+        );
 
         let libabc = ExternalLibraryEntry::new(
             "abc".to_owned(),
@@ -937,9 +959,9 @@ fn bar() -> i32 {
 
     #[test]
     fn test_merge_import_function() {
-        let module0 = SubModule {
-            fullname: "hello",
-            source: r#"
+        let module0 = (
+            "hello",
+            r#"
 import fn module::base::add(i32,i32)->i32
 import fn module::middle::muladd(i32,i32,i32)->i32
 
@@ -947,11 +969,11 @@ fn main()->i32 {
     call(muladd, imm_i32(0x11), imm_i32(0x13), imm_i32(0x17))
     call(add, imm_i32(0x23), imm_i32(0x29))
 }"#,
-        };
+        );
 
-        let module1 = SubModule {
-            fullname: "hello::middle",
-            source: r#"
+        let module1 = (
+            "hello::middle",
+            r#"
 import fn module::base::add(i32,i32)->i32
 
 fn muladd(left:i32, right:i32, factor:i32)->i32 {
@@ -961,17 +983,17 @@ fn muladd(left:i32, right:i32, factor:i32)->i32 {
             local_load_i32_s(right)),
         local_load_i32_s(factor))
 }"#,
-        };
+        );
 
-        let module2 = SubModule {
-            fullname: "hello::base",
-            source: r#"
+        let module2 = (
+            "hello::base",
+            r#"
 fn add(left:i32, right:i32)->i32 {
     add_i32(
         local_load_i32_s(left),
         local_load_i32_s(right))
 }"#,
-        };
+        );
 
         let submodules = vec![module0, module1, module2];
         let submodule_entries = assemble_submodules(&submodules, &[], &[]);
@@ -980,7 +1002,7 @@ fn add(left:i32, right:i32)->i32 {
         // import modules
         assert_eq!(
             merged_entry.import_module_entries,
-            vec![create_self_dependent_import_module_entry()]
+            vec![create_self_reference_import_module_entry()]
         );
 
         // import functions
@@ -1084,11 +1106,11 @@ fn add(left:i32, right:i32)->i32 {
 
         // function names
         assert_eq!(
-            merged_entry.function_name_entries,
+            merged_entry.export_function_entries,
             vec![
-                FunctionNameEntry::new("hello::main".to_owned(), false),
-                FunctionNameEntry::new("hello::middle::muladd".to_owned(), false),
-                FunctionNameEntry::new("hello::base::add".to_owned(), false),
+                ExportFunctionEntry::new("hello::main".to_owned(), Visibility::Private),
+                ExportFunctionEntry::new("hello::middle::muladd".to_owned(), Visibility::Private),
+                ExportFunctionEntry::new("hello::base::add".to_owned(), Visibility::Private),
             ]
         );
 
@@ -1116,24 +1138,24 @@ fn add(left:i32, right:i32)->i32 {
 
     #[test]
     fn test_link_with_unresolved_function() {
-        let module0 = SubModule {
-            fullname: "hello",
-            source: r#"
+        let module0 = (
+            "hello",
+            r#"
 import fn module::world::do_this()
 import fn module::world::do_that()
 
 fn main()->i32 {
     nop()
 }"#,
-        };
+        );
 
-        let module1 = SubModule {
-            fullname: "hello::world",
-            source: r#"
+        let module1 = (
+            "hello::world",
+            r#"
 fn do_this() {
     nop()
 }"#,
-        };
+        );
 
         let submodules = vec![module0, module1];
         let submodule_entries = assemble_submodules(&submodules, &[], &[]);
@@ -1142,30 +1164,30 @@ fn do_this() {
         assert!(matches!(
             merged_result,
             Err(LinkerError {
-                error_type: LinkErrorType::UnresolvedFunctionName(text)
+                error_type: LinkErrorType::FunctionNotFound(text)
             }) if text == "hello::world::do_that"
         ));
     }
 
     #[test]
     fn test_link_with_unresolved_data() {
-        let module0 = SubModule {
-            fullname: "hello",
-            source: r#"
+        let module0 = (
+            "hello",
+            r#"
 import data module::world::d0 type i32
 import data module::world::d1 type i32
 
 fn main()->i32 {
     nop()
 }"#,
-        };
+        );
 
-        let module1 = SubModule {
-            fullname: "hello::world",
-            source: r#"
+        let module1 = (
+            "hello::world",
+            r#"
 data d0:i32 = 0x11
 "#,
-        };
+        );
 
         let submodules = vec![module0, module1];
         let submodule_entries = assemble_submodules(&submodules, &[], &[]);
@@ -1174,7 +1196,7 @@ data d0:i32 = 0x11
         assert!(matches!(
             merged_result,
             Err(LinkerError {
-                error_type: LinkErrorType::UnresolvedDataName(text)
+                error_type: LinkErrorType::DataNotFound(text)
             }) if text == "hello::world::d1"
         ));
     }

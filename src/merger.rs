@@ -6,9 +6,9 @@
 
 use anc_image::{
     entry::{
-        DataNameEntry, ExternalFunctionEntry, ExternalLibraryEntry, FunctionEntry,
-        FunctionNameEntry, ImportDataEntry, ImportFunctionEntry, ImportModuleEntry,
-        InitedDataEntry, LocalVariableListEntry, RelocateListEntry, TypeEntry, UninitDataEntry,
+        ExportDataEntry, ExportFunctionEntry, ExternalFunctionEntry, ExternalLibraryEntry,
+        FunctionEntry, ImportDataEntry, ImportFunctionEntry, ImportModuleEntry, InitedDataEntry,
+        LocalVariableListEntry, RelocateListEntry, TypeEntry, UninitDataEntry,
     },
     module_image::RelocateType,
 };
@@ -231,15 +231,18 @@ pub fn merge_import_module_entries(
 }
 
 pub fn merge_import_function_entries(
-    function_name_entries: &[FunctionNameEntry],
+    export_function_entries: &[ExportFunctionEntry],
     internal_function_remap_indices_list: &[RemapIndices],
     import_module_remap_indices_list: &[RemapIndices],
     type_remap_indices_list: &[RemapIndices],
     import_function_entries_list: &[&[ImportFunctionEntry]],
-) -> (
-    /* import_data_entries */ Vec<ImportFunctionEntry>,
-    /* data_public_remap_indices_list */ Vec<RemapIndices>,
-) {
+) -> Result<
+    (
+        /* import_data_entries */ Vec<ImportFunctionEntry>,
+        /* data_public_remap_indices_list */ Vec<RemapIndices>,
+    ),
+    LinkerError,
+> {
     // note:
     // - when adding new `ImportFunctionEntry`, the propertries "import_module_index"
     //   and "type_index" need to be updated.
@@ -247,52 +250,66 @@ pub fn merge_import_function_entries(
     //   the functions are the same or not, and the module in which the functions
     //   reside will be ignored.
 
-    let mut entries_merged: Vec<ImportFunctionEntry> = vec![];
+    let mut import_function_entries_merged: Vec<ImportFunctionEntry> = vec![];
     let mut import_function_remap_table_list: Vec<ImportRemapTable> = vec![];
 
     // merge import function list
-    for (submodule_index, entries_source) in import_function_entries_list.iter().enumerate() {
+    for (submodule_index, import_function_entries_source) in
+        import_function_entries_list.iter().enumerate()
+    {
         let mut import_remap_table: ImportRemapTable = vec![];
 
         // check each entry
-        for entry_source in entries_source.iter() {
-            let merged_import_module_index =
-                import_module_remap_indices_list[submodule_index][entry_source.import_module_index];
+        for import_function_entry_source in import_function_entries_source.iter() {
+            let merged_import_module_index = import_module_remap_indices_list[submodule_index]
+                [import_function_entry_source.import_module_index];
             let merged_type_index =
-                type_remap_indices_list[submodule_index][entry_source.type_index];
+                type_remap_indices_list[submodule_index][import_function_entry_source.type_index];
 
             // check the internal function list first
-            let pos_internal_opt = function_name_entries
+            let pos_internal_opt = export_function_entries
                 .iter()
-                .position(|item| item.full_name == entry_source.full_name);
+                .position(|item| item.full_name == import_function_entry_source.full_name);
 
             if let Some(pos_internal) = pos_internal_opt {
                 // the target is a internal function, instead of imported function
-                // todo: validate the declare type and the actual type
+                // let export_function_entry = &export_function_entries[pos_internal];
+
+                // In the case of merged modules, “visibility” does not need to be checked,
+                // because all functions and data within the same module
+                // (even if the source is from a different module) are visible.
+
+                // todo: check the type
+
                 import_remap_table.push(ImportRemapItem::Internal(pos_internal));
             } else {
                 // the target is an imported function
 
                 // check the merged list first
-                let pos_merged_opt = entries_merged
+                let pos_merged_opt = import_function_entries_merged
                     .iter()
-                    .position(|item| item.full_name == entry_source.full_name);
+                    .position(|item| item.full_name == import_function_entry_source.full_name);
 
                 match pos_merged_opt {
                     Some(pos_merged) => {
                         // found exists
-                        // todo: check declare type
+
+                        // check consistance
+                        // let import_function_entry_merged = &import_function_entries_merged[pos_merged];
+
+                        // todo:: check the type
+
                         import_remap_table.push(ImportRemapItem::Import(pos_merged));
                     }
                     None => {
                         // add entry
-                        let pos_new = entries_merged.len();
+                        let pos_new = import_function_entries_merged.len();
                         let entry_merged = ImportFunctionEntry::new(
-                            entry_source.full_name.clone(),
+                            import_function_entry_source.full_name.clone(),
                             merged_import_module_index,
                             merged_type_index,
                         );
-                        entries_merged.push(entry_merged);
+                        import_function_entries_merged.push(entry_merged);
                         import_remap_table.push(ImportRemapItem::Import(pos_new));
                     }
                 }
@@ -304,7 +321,7 @@ pub fn merge_import_function_entries(
 
     // build the function public index remap list
     let mut function_public_remap_indices_list: Vec<RemapIndices> = vec![];
-    let import_function_count = entries_merged.len();
+    let import_function_count = import_function_entries_merged.len();
     for (remap_items, internal_function_indices) in import_function_remap_table_list
         .iter()
         .zip(internal_function_remap_indices_list.iter())
@@ -331,7 +348,10 @@ pub fn merge_import_function_entries(
         function_public_remap_indices_list.push(indices);
     }
 
-    (entries_merged, function_public_remap_indices_list)
+    Ok((
+        import_function_entries_merged,
+        function_public_remap_indices_list,
+    ))
 }
 
 /// the data public index is mixed the following items:
@@ -341,37 +361,38 @@ pub fn merge_import_function_entries(
 /// - internal read-only data items
 /// - internal read-write data items
 /// - internal uninitilized data items
+#[allow(clippy::type_complexity)]
 pub fn merge_data_entries(
-    data_name_entries_list: &[&[DataNameEntry]],
+    export_data_entries_list: &[&[ExportDataEntry]],
     read_only_data_entries_list: &[&[InitedDataEntry]],
     read_write_data_entries_list: &[&[InitedDataEntry]],
     uninit_data_entries_list: &[&[UninitDataEntry]],
 ) -> (
-    /* data_name_entries */ Vec<DataNameEntry>,
+    /* export_data_entries */ Vec<ExportDataEntry>,
     /* read_only_data_entries */ Vec<InitedDataEntry>,
     /* read_write_data_entries */ Vec<InitedDataEntry>,
     /* uninit_data_entries */ Vec<UninitDataEntry>,
     /* internal_data_remap_indices_list */ Vec<RemapIndices>,
 ) {
-    let mut data_name_entries: Vec<DataNameEntry> = vec![];
+    let mut export_data_entries: Vec<ExportDataEntry> = vec![];
     let mut read_only_data_entries: Vec<InitedDataEntry> = vec![];
     let mut read_write_data_entries: Vec<InitedDataEntry> = vec![];
     let mut uninit_data_entries: Vec<UninitDataEntry> = vec![];
 
     let mut internal_data_remap_indices_list: Vec<RemapIndices> =
-        vec![vec![]; data_name_entries_list.len()];
+        vec![vec![]; export_data_entries_list.len()];
 
-    let module_count = data_name_entries_list.len();
+    let module_count = export_data_entries_list.len();
 
     // add read-only data
     for submodule_index in 0..module_count {
-        let total_data_internal_index_start = data_name_entries.len();
+        let total_data_internal_index_start = export_data_entries.len();
         let module_data_internal_index_start =
             internal_data_remap_indices_list[submodule_index].len();
         let data_entry_count = read_only_data_entries_list[submodule_index].len();
 
-        data_name_entries.extend(
-            data_name_entries_list[submodule_index][module_data_internal_index_start
+        export_data_entries.extend(
+            export_data_entries_list[submodule_index][module_data_internal_index_start
                 ..module_data_internal_index_start + data_entry_count]
                 .to_vec(),
         );
@@ -383,13 +404,13 @@ pub fn merge_data_entries(
 
     // add read-write data
     for submodule_index in 0..module_count {
-        let total_data_internal_index_start = data_name_entries.len();
+        let total_data_internal_index_start = export_data_entries.len();
         let module_data_internal_index_start =
             internal_data_remap_indices_list[submodule_index].len();
         let data_entry_count = read_write_data_entries_list[submodule_index].len();
 
-        data_name_entries.extend(
-            data_name_entries_list[submodule_index][module_data_internal_index_start
+        export_data_entries.extend(
+            export_data_entries_list[submodule_index][module_data_internal_index_start
                 ..module_data_internal_index_start + data_entry_count]
                 .to_vec(),
         );
@@ -401,13 +422,13 @@ pub fn merge_data_entries(
 
     // add uninit data
     for submodule_index in 0..module_count {
-        let total_data_internal_index_start = data_name_entries.len();
+        let total_data_internal_index_start = export_data_entries.len();
         let module_data_internal_index_start =
             internal_data_remap_indices_list[submodule_index].len();
         let data_entry_count = uninit_data_entries_list[submodule_index].len();
 
-        data_name_entries.extend(
-            data_name_entries_list[submodule_index][module_data_internal_index_start
+        export_data_entries.extend(
+            export_data_entries_list[submodule_index][module_data_internal_index_start
                 ..module_data_internal_index_start + data_entry_count]
                 .to_vec(),
         );
@@ -418,7 +439,7 @@ pub fn merge_data_entries(
     }
 
     (
-        data_name_entries,
+        export_data_entries,
         read_only_data_entries,
         read_write_data_entries,
         uninit_data_entries,
@@ -434,14 +455,17 @@ pub fn merge_data_entries(
 /// - internal read-write data items
 /// - internal uninitilized data items
 pub fn merge_import_data_entries(
-    data_name_entries: &[DataNameEntry],
+    export_data_entries: &[ExportDataEntry],
     internal_data_remap_indices_list: &[RemapIndices],
     import_module_remap_indices_list: &[RemapIndices],
     import_data_entries_list: &[&[ImportDataEntry]],
-) -> (
-    /* import_data_entries */ Vec<ImportDataEntry>,
-    /* data_public_remap_indices_list */ Vec<RemapIndices>,
-) {
+) -> Result<
+    (
+        /* import_data_entries */ Vec<ImportDataEntry>,
+        /* data_public_remap_indices_list */ Vec<RemapIndices>,
+    ),
+    LinkerError,
+> {
     // note:
     // - when adding new `ImportDataEntry`, the propertries "import_module_index"
     //   needs to be updated.
@@ -449,7 +473,7 @@ pub fn merge_import_data_entries(
     //   the data are the same or not, and the module in which the data
     //   reside will be ignored.
 
-    let mut entries_merged: Vec<ImportDataEntry> = vec![];
+    let mut import_data_entries_merged: Vec<ImportDataEntry> = vec![];
     let mut import_data_remap_table_list: Vec<ImportRemapTable> =
         vec![vec![]; import_data_entries_list.len()];
 
@@ -460,50 +484,92 @@ pub fn merge_import_data_entries(
         DataSectionType::Uninit,
     ] {
         // merge import data list
-        for (submodule_index, entries_source) in import_data_entries_list.iter().enumerate() {
+        for (submodule_index, import_data_entries_source) in
+            import_data_entries_list.iter().enumerate()
+        {
             let mut import_remap_table: ImportRemapTable = vec![];
 
             // check each entry
-            for entry_source in entries_source
+            for import_data_entry_source in import_data_entries_source
                 .iter()
                 .filter(|item| item.data_section_type == data_section_type)
             {
-                // check the internal function list first
-                let pos_internal_opt = data_name_entries
+                // check the internal data list first
+                let pos_internal_opt = export_data_entries
                     .iter()
-                    .position(|item| item.full_name == entry_source.full_name);
+                    .position(|item| item.full_name == import_data_entry_source.full_name);
 
                 if let Some(pos_internal) = pos_internal_opt {
                     // the target is a internal function, instead of imported function
-                    // todo: validate the declare type and section type
+                    let export_data_entry = &export_data_entries[pos_internal];
+
+                    // In the case of merged modules, “visibility” does not need to be checked,
+                    // because all functions and data within the same module
+                    // (even if the source is from a different module) are visible.
+
+                    if import_data_entry_source.data_section_type != export_data_entry.section_type
+                    {
+                        return Err(LinkerError::new(LinkErrorType::ImportDataSectionMismatch(
+                            import_data_entry_source.full_name.to_owned(),
+                            import_data_entry_source.data_section_type,
+                        )));
+                    }
+
+                    // todo: check the type
+
                     import_remap_table.push(ImportRemapItem::Internal(pos_internal));
                 } else {
                     // the target is an imported data
 
                     // check the merged list first
-                    let pos_merged_opt = entries_merged
+                    let pos_merged_opt = import_data_entries_merged
                         .iter()
-                        .position(|item| item.full_name == entry_source.full_name);
+                        .position(|item| item.full_name == import_data_entry_source.full_name);
 
                     match pos_merged_opt {
                         Some(pos_merged) => {
                             // found exists
+                            // check consistance
+                            let import_data_entry_merged = &import_data_entries_merged[pos_merged];
+
+                            // check data section type
+                            if import_data_entry_source.data_section_type
+                                != import_data_entry_merged.data_section_type
+                            {
+                                return Err(LinkerError::new(
+                                    LinkErrorType::ImportDataSectionInconsistant(
+                                        import_data_entry_source.full_name.to_owned(),
+                                    ),
+                                ));
+                            }
+
+                            // check the type
+                            if import_data_entry_source.memory_data_type
+                                != import_data_entry_merged.memory_data_type
+                            {
+                                return Err(LinkerError::new(
+                                    LinkErrorType::ImportDataTypeInconsistant(
+                                        import_data_entry_source.full_name.to_owned(),
+                                    ),
+                                ));
+                            }
+
                             import_remap_table.push(ImportRemapItem::Import(pos_merged));
                         }
                         None => {
                             // add entry
                             let merged_import_module_index = import_module_remap_indices_list
-                                [submodule_index][entry_source.import_module_index];
+                                [submodule_index][import_data_entry_source.import_module_index];
 
-                            let pos_new = entries_merged.len();
-                            let entry_merged = ImportDataEntry::new(
-                                entry_source.full_name.clone(),
+                            let pos_new = import_data_entries_merged.len();
+                            let import_data_entry_merged = ImportDataEntry::new(
+                                import_data_entry_source.full_name.clone(),
                                 merged_import_module_index,
-                                entry_source.data_section_type,
-                                entry_source.memory_data_type,
+                                import_data_entry_source.data_section_type,
+                                import_data_entry_source.memory_data_type,
                             );
 
-                            entries_merged.push(entry_merged);
+                            import_data_entries_merged.push(import_data_entry_merged);
                             import_remap_table.push(ImportRemapItem::Import(pos_new));
                         }
                     }
@@ -517,7 +583,7 @@ pub fn merge_import_data_entries(
     // build the data public index remap list
 
     let mut data_public_remap_indices_list: Vec<RemapIndices> = vec![];
-    let import_data_count = entries_merged.len();
+    let import_data_count = import_data_entries_merged.len();
     for (remap_items, internal_data_indices) in import_data_remap_table_list
         .iter()
         .zip(internal_data_remap_indices_list.iter())
@@ -544,7 +610,7 @@ pub fn merge_import_data_entries(
         data_public_remap_indices_list.push(indices);
     }
 
-    (entries_merged, data_public_remap_indices_list)
+    Ok((import_data_entries_merged, data_public_remap_indices_list))
 }
 
 pub fn merge_external_library_entries(
@@ -573,7 +639,7 @@ pub fn merge_external_library_entries(
             match pos_merged_opt {
                 Some(pos_merged) => {
                     let entry_merged = &entries_merged[pos_merged];
-                    let module_name = &entry_merged.name;
+                    let library_name = &entry_merged.name;
 
                     let dependency_source = entry_source.value.as_ref();
                     let dependency_merged = entry_merged.value.as_ref();
@@ -588,13 +654,13 @@ pub fn merge_external_library_entries(
                                 {
                                     return Err(LinkerError::new(
                                         LinkErrorType::DependentSourceConflict(
-                                            module_name.to_owned(),
+                                            library_name.to_owned(),
                                         ),
                                     ));
                                 } else {
                                     return Err(LinkerError::new(
                                         LinkErrorType::DependentNameConflict(
-                                            module_name.to_owned(),
+                                            library_name.to_owned(),
                                         ),
                                     ));
                                 }
@@ -604,13 +670,13 @@ pub fn merge_external_library_entries(
                                 {
                                     return Err(LinkerError::new(
                                         LinkErrorType::DependentSourceConflict(
-                                            module_name.to_owned(),
+                                            library_name.to_owned(),
                                         ),
                                     ));
                                 } else {
                                     return Err(LinkerError::new(
                                         LinkErrorType::DependentNameConflict(
-                                            module_name.to_owned(),
+                                            library_name.to_owned(),
                                         ),
                                     ));
                                 }
@@ -637,7 +703,7 @@ pub fn merge_external_library_entries(
                                         VersionCompareResult::Different => {
                                             return Err(LinkerError::new(
                                                 LinkErrorType::DependentVersionConflict(
-                                                    module_name.to_owned(),
+                                                    library_name.to_owned(),
                                                 ),
                                             ));
                                         }
@@ -645,19 +711,19 @@ pub fn merge_external_library_entries(
                                 } else {
                                     return Err(LinkerError::new(
                                         LinkErrorType::DependentNameConflict(
-                                            module_name.to_owned(),
+                                            library_name.to_owned(),
                                         ),
                                     ));
                                 }
                             }
                             ExternalLibraryDependency::Runtime => {
                                 return Err(LinkerError::new(LinkErrorType::DependentNameConflict(
-                                    module_name.to_owned(),
+                                    library_name.to_owned(),
                                 )))
                             }
                             ExternalLibraryDependency::System(_) => {
                                 return Err(LinkerError::new(LinkErrorType::DependentNameConflict(
-                                    module_name.to_owned(),
+                                    library_name.to_owned(),
                                 )))
                             }
                         }
@@ -809,6 +875,12 @@ pub fn merge_function_entries(
     (merged_function_entries, merged_relocate_list_entries)
 }
 
+// fn is_module_different(left_full_name:&str, right_full_name:&str) -> bool {
+//     let (left_module_name, _) = left_full_name.split_once(NAME_PATH_SEPARATOR).unwrap();
+//     let (right_module_name, _) = right_full_name.split_once(NAME_PATH_SEPARATOR).unwrap();
+//     left_module_name != right_module_name
+// }
+
 enum VersionCompareResult {
     Equals,
     GreaterThan,
@@ -847,43 +919,45 @@ enum VersionCompareResult {
 fn compare_version(left: &str, right: &str) -> VersionCompareResult {
     let left_parts = left
         .split('.')
-        .map(|item| u16::from_str_radix(item, 10).unwrap())
+        .map(
+            |item| item.parse::<u16>().unwrap(), /* u16::from_str_radix(item, 10).unwrap() */
+        )
         .collect::<Vec<_>>();
 
     let right_parts = right
         .split('.')
-        .map(|item| u16::from_str_radix(item, 10).unwrap())
+        .map(
+            |item| item.parse::<u16>().unwrap(), /* u16::from_str_radix(item, 10).unwrap() */
+        )
         .collect::<Vec<_>>();
 
     if left_parts[0] != right_parts[0] {
         // major differ
         VersionCompareResult::Different
-    } else {
-        if left_parts[0] == 0 {
-            // zero major
-            if left_parts[1] != right_parts[1] {
-                // minor differ
-                VersionCompareResult::Different
-            } else if left_parts[2] > right_parts[2] {
-                VersionCompareResult::GreaterThan
-            } else if left_parts[2] < right_parts[2] {
-                VersionCompareResult::LessThan
-            } else {
-                VersionCompareResult::Equals
-            }
+    } else if left_parts[0] == 0 {
+        // zero major
+        if left_parts[1] != right_parts[1] {
+            // minor differ
+            VersionCompareResult::Different
+        } else if left_parts[2] > right_parts[2] {
+            VersionCompareResult::GreaterThan
+        } else if left_parts[2] < right_parts[2] {
+            VersionCompareResult::LessThan
         } else {
-            // normal major
-            if left_parts[1] > right_parts[1] {
-                VersionCompareResult::GreaterThan
-            } else if left_parts[1] < right_parts[1] {
-                VersionCompareResult::LessThan
-            } else if left_parts[2] > right_parts[2] {
-                VersionCompareResult::GreaterThan
-            } else if left_parts[2] < right_parts[2] {
-                VersionCompareResult::LessThan
-            } else {
-                VersionCompareResult::Equals
-            }
+            VersionCompareResult::Equals
+        }
+    } else {
+        // normal major
+        if left_parts[1] > right_parts[1] {
+            VersionCompareResult::GreaterThan
+        } else if left_parts[1] < right_parts[1] {
+            VersionCompareResult::LessThan
+        } else if left_parts[2] > right_parts[2] {
+            VersionCompareResult::GreaterThan
+        } else if left_parts[2] < right_parts[2] {
+            VersionCompareResult::LessThan
+        } else {
+            VersionCompareResult::Equals
         }
     }
 }
