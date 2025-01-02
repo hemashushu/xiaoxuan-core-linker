@@ -35,6 +35,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "anc-linker"
+version = "0.2.0"
+dependencies = [
+ "anc-assembler",
+ "anc-image",
+ "anc-isa",
+ "anc-parser-asm",
+ "ason",
+ "pretty_assertions",
+]
+
+[[package]]
 name = "anc-parser-asm"
 version = "0.2.1"
 dependencies = [
@@ -170,18 +182,6 @@ name = "libc"
 version = "0.2.168"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5aaeb2981e0606ca11d79718f8bb01164f1d6ed75080182d3abf017e6d244b6d"
-
-[[package]]
-name = "linker"
-version = "0.2.0"
-dependencies = [
- "anc-assembler",
- "anc-image",
- "anc-isa",
- "anc-parser-asm",
- "ason",
- "pretty_assertions",
-]
 
 [[package]]
 name = "log"

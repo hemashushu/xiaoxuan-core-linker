@@ -9,14 +9,17 @@ use std::collections::VecDeque;
 use anc_assembler::assembler::create_self_reference_import_module_entry;
 use anc_image::{
     entry::{
-        DataIndexEntry, DataIndexListEntry, FunctionIndexEntry, FunctionIndexListEntry,
-        ImageCommonEntry, ImageIndexEntry, ImportModuleEntry,
+        DataIndexEntry, DataIndexListEntry, ExternalFunctionEntry, ExternalFunctionIndexEntry,
+        ExternalFunctionIndexListEntry, FunctionIndexEntry, FunctionIndexListEntry,
+        ImageCommonEntry, ImageIndexEntry, ImportModuleEntry, TypeEntry,
     },
     module_image::Visibility,
 };
 use anc_isa::{DataSectionType, ModuleDependency};
 
-use crate::{LinkErrorType, LinkerError};
+use crate::{
+    linker::RemapIndices, merger::merge_external_library_entries, LinkErrorType, LinkerError,
+};
 
 /// When an application is loaded, all its dependent modules must also be loaded.
 /// When loading these modules, we should follow a specific order:
@@ -320,13 +323,45 @@ pub fn build_indices(
         data_index_list_entries.push(DataIndexListEntry::new(data_index_entries));
     }
 
-    // todo: merge external library
+    // merge external library
+    let external_library_entries_list = image_commmon_entries
+        .iter()
+        .map(|item| item.external_library_entries.as_slice())
+        .collect::<Vec<_>>();
+    let (external_library_entries, external_library_remap_indices_list) =
+        merge_external_library_entries(&external_library_entries_list)?;
 
-    // todo: merge external type
+    // merge external function and type entries
+    let type_entries_list = image_commmon_entries
+        .iter()
+        .map(|item| item.type_entries.as_slice())
+        .collect::<Vec<_>>();
 
-    // todo: merge external function
+    let external_function_entries_list = image_commmon_entries
+        .iter()
+        .map(|item| item.external_function_entries.as_slice())
+        .collect::<Vec<_>>();
 
-    // todo: build external function index
+    let (
+        type_entries_merged,
+        external_function_entries_merged,
+        external_function_remap_indices_list,
+    ) = build_external_function_and_type_entries(
+        &external_library_remap_indices_list,
+        &type_entries_list,
+        &external_function_entries_list,
+    );
+
+    let external_function_index_entries = external_function_remap_indices_list
+        .iter()
+        .map(|indices| {
+            let index_entries = indices
+                .iter()
+                .map(|index| ExternalFunctionIndexEntry::new(*index))
+                .collect::<Vec<_>>();
+            ExternalFunctionIndexListEntry::new(index_entries)
+        })
+        .collect::<Vec<_>>();
 
     // search the entry point: the '_start' function.
     let expected_full_name = format!("{}::{}", image_commmon_entries[0].name, "_start");
@@ -346,15 +381,95 @@ pub fn build_indices(
     let image_index_entry = ImageIndexEntry {
         function_index_list_entries,
         data_index_list_entries,
-        unified_external_library_entries: vec![],
-        unified_external_type_entries: vec![],
-        unified_external_function_entries: vec![],
-        external_function_index_entries: vec![],
+        unified_external_library_entries: external_library_entries,
+        unified_external_type_entries: type_entries_merged,
+        unified_external_function_entries: external_function_entries_merged,
+        external_function_index_entries,
         module_entries: module_entries.to_vec(),
         entry_function_public_index,
     };
 
     Ok(image_index_entry)
+}
+
+fn build_external_function_and_type_entries(
+    external_library_remap_indices_list: &[RemapIndices],
+    type_entries_list: &[&[TypeEntry]],
+    external_function_entries_list: &[&[ExternalFunctionEntry]],
+) -> (
+    /* type_entries */ Vec<TypeEntry>,
+    /* external_function_entries */ Vec<ExternalFunctionEntry>,
+    /* external_function_remap_indices_list */ Vec<RemapIndices>,
+) {
+    let mut type_entries_merged: Vec<TypeEntry> = vec![];
+    let mut external_function_entries_merged: Vec<ExternalFunctionEntry> = vec![];
+    let mut external_function_remap_indices_list: Vec<RemapIndices> = vec![];
+
+    for (submodule_index, external_function_entries) in
+        external_function_entries_list.iter().enumerate()
+    {
+        let mut indices = vec![];
+
+        for external_function_entry_source in external_function_entries.iter() {
+            let type_index_source = external_function_entry_source.type_index;
+            let type_entry_source = &type_entries_list[submodule_index][type_index_source];
+            let type_index_merged_opt = type_entries_merged
+                .iter()
+                .position(|item| item == type_entry_source);
+
+            let type_index_merged = match type_index_merged_opt {
+                Some(pos_merged) => {
+                    // found exists
+                    pos_merged
+                }
+                None => {
+                    // add entry
+                    let pos_new = type_entries_merged.len();
+                    type_entries_merged.push(type_entry_source.to_owned());
+                    pos_new
+                }
+            };
+
+            let external_library_index_merged = external_library_remap_indices_list
+                [submodule_index][external_function_entry_source.external_library_index];
+
+            // how to determine if two external functions are the same?
+            // Is it just checking the function name like in C/ELF programs,
+            // includes the library name?
+            let pos_merged_opt = external_function_entries_merged.iter().position(|item| {
+                item.name == external_function_entry_source.name
+                    && item.external_library_index == external_library_index_merged
+            });
+
+            match pos_merged_opt {
+                Some(pos_merged) => {
+                    // found exists
+                    // todo: check declare type
+                    indices.push(pos_merged);
+                }
+                None => {
+                    // add entry
+                    let pos_new = external_function_entries_merged.len();
+
+                    let external_function_entry_merged = ExternalFunctionEntry::new(
+                        external_function_entry_source.name.clone(),
+                        external_library_index_merged,
+                        type_index_merged,
+                    );
+                    external_function_entries_merged.push(external_function_entry_merged);
+                    indices.push(pos_new);
+                }
+            }
+        }
+
+        external_function_remap_indices_list.push(indices);
+    }
+
+    (
+        type_entries_merged,
+        external_function_entries_merged,
+        external_function_remap_indices_list,
+    )
 }
 
 #[cfg(test)]
@@ -365,12 +480,13 @@ mod tests {
     use anc_image::{
         bytecode_reader::format_bytecode_as_text,
         entry::{
-            DataIndexEntry, ExternalLibraryEntry, FunctionIndexEntry, ImageCommonEntry,
-            ImageIndexEntry, ImportModuleEntry,
+            DataIndexEntry, ExternalFunctionEntry, ExternalFunctionIndexEntry,
+            ExternalLibraryEntry, FunctionIndexEntry, ImageCommonEntry, ImageIndexEntry,
+            ImportModuleEntry, TypeEntry,
         },
         module_image::ImageType,
     };
-    use anc_isa::{DataSectionType, ModuleDependency};
+    use anc_isa::{DataSectionType, ExternalLibraryDependency, ModuleDependency, OperandDataType};
     use anc_parser_asm::parser::parse_from_str;
 
     use crate::indexer::build_indices;
@@ -406,22 +522,6 @@ mod tests {
         let image_index_entry = build_indices(&image_common_entries, &module_entries).unwrap();
         (image_common_entries, image_index_entry)
     }
-
-    //     fn build_image(
-    //         image_common_entries: &[ImageCommonEntry],
-    //         image_index_entry: &ImageIndexEntry,
-    //     ) -> Vec<Vec<u8>> {
-    //         let mut app: Vec<u8> = vec![];
-    //         write_image_file(&image_common_entries[0], image_index_entry, &mut app).unwrap();
-    //
-    //         let mut binaries = vec![app];
-    //         for image_common_entry in &image_common_entries[1..] {
-    //             let mut shared: Vec<u8> = vec![];
-    //             write_object_file(image_common_entry, true, &mut shared).unwrap();
-    //             binaries.push(shared);
-    //         }
-    //         binaries
-    //     }
 
     #[test]
     fn test_sort_modules() {
@@ -709,6 +809,237 @@ pub fn sub(left:i32, right:i32) -> i32 {    // func pub idx: 0 (target mod idx: 
 
     #[test]
     fn test_build_index_external_functions() {
-        // todo
+        // app, module index = 0
+        let entry_app = build_module(
+            "app",
+            r#"
+external fn hello::x(i32,i32)-> i32 // internal: lib(2),idx(0)  unified: lib(2),idx(0),type(0)
+external fn foo::b(i32) -> i32      // internal: lib(0),idx(1)  unified: lib(0),idx(1),type(1)
+external fn bar::m(i32, i32)        // internal: lib(1),idx(2)  unified: lib(1),idx(2),type(2)
+external fn hello::y(i32)           // internal: lib(2),idx(3)  unified: lib(2),idx(3),type(3)
+
+fn _start()->i32 {
+    extcall(x, imm_i32(0x53), imm_i32(0x59))    // idx 0
+    extcall(b, imm_i32(0x61))                   // idx 1
+    extcall(m, imm_i32(0x73), imm_i32(0x79))    // idx 2
+    extcall(y, imm_i32(0x87))                   // idx 3
+}
+
+"#,
+            vec![
+                ImportModuleEntry::new("math".to_owned(), Box::new(ModuleDependency::Runtime)),
+                ImportModuleEntry::new("std".to_owned(), Box::new(ModuleDependency::Runtime)),
+            ],
+            vec![
+                ExternalLibraryEntry::new(
+                    "foo".to_owned(),
+                    Box::new(ExternalLibraryDependency::Runtime),
+                ),
+                ExternalLibraryEntry::new(
+                    "bar".to_owned(),
+                    Box::new(ExternalLibraryDependency::Runtime),
+                ),
+                ExternalLibraryEntry::new(
+                    "hello".to_owned(),
+                    Box::new(ExternalLibraryDependency::Runtime),
+                ),
+            ],
+        );
+
+        // math, module index = 1
+        let entry_math = build_module(
+            "math",
+            r#"
+external fn bar::m(i32, i32)        // internal: lib(0),idx(0)  unified: lib(1),idx(2),type(2)
+external fn bar::n(i32)             // internal: lib(0),idx(1)  unified: lib(1),idx(4),type(3)
+external fn foo::a(i32,i32)-> i32   // internal: lib(1),idx(2)  unified: lib(0),idx(5),type(0)
+external fn world::p()->i32         // internal: lib(2),idx(3)  unified: lib(3),idx(6),type(4)
+external fn world::q()              // internal: lib(2),idx(4)  unified: lib(3),idx(7),type(5)
+
+fn do_that() {
+    extcall(m, imm_i32(0x23), imm_i32(0x29))    // idx 0
+    extcall(n, imm_i32(0x31))                   // idx 1
+    extcall(a, imm_i32(0x37), imm_i32(0x41))    // idx 2
+    extcall(p)                                  // idx 3
+    extcall(q)                                  // idx 4
+}
+"#,
+            vec![],
+            vec![
+                ExternalLibraryEntry::new(
+                    "bar".to_owned(),
+                    Box::new(ExternalLibraryDependency::Runtime),
+                ),
+                ExternalLibraryEntry::new(
+                    "foo".to_owned(),
+                    Box::new(ExternalLibraryDependency::Runtime),
+                ),
+                ExternalLibraryEntry::new(
+                    "world".to_owned(),
+                    Box::new(ExternalLibraryDependency::Runtime),
+                ),
+            ],
+        );
+
+        // std, module index = 2
+        let entry_std = build_module(
+            "std",
+            r#"
+external fn foo::a(i32,i32)-> i32   // internal: lib(0),idx(0)  unified: lib(0),idx(5),type(0)
+external fn foo::b(i32) -> i32      // internal: lib(0),idx(1)  unified: lib(0),idx(1),type(1)
+
+fn do_this() -> i32 {
+    extcall(a, imm_i32(0x11), imm_i32(0x13))    // idx 0
+    extcall(b, imm_i32(0x17))                   // idx 1
+}
+"#,
+            vec![],
+            vec![ExternalLibraryEntry::new(
+                "foo".to_owned(),
+                Box::new(ExternalLibraryDependency::Runtime),
+            )],
+        );
+
+        let (image_common_entries, index_entry) =
+            build_index(vec![entry_app, entry_math, entry_std]);
+
+        // check module list
+        assert_eq!(
+            index_entry.module_entries,
+            vec![
+                ImportModuleEntry::new("module".to_owned(), Box::new(ModuleDependency::Current)),
+                ImportModuleEntry::new("math".to_owned(), Box::new(ModuleDependency::Runtime)),
+                ImportModuleEntry::new("std".to_owned(), Box::new(ModuleDependency::Runtime)),
+            ]
+        );
+
+        // check unified external library list
+        assert_eq!(
+            index_entry.unified_external_library_entries,
+            vec![
+                ExternalLibraryEntry::new(
+                    "foo".to_owned(),
+                    Box::new(ExternalLibraryDependency::Runtime)
+                ),
+                ExternalLibraryEntry::new(
+                    "bar".to_owned(),
+                    Box::new(ExternalLibraryDependency::Runtime)
+                ),
+                ExternalLibraryEntry::new(
+                    "hello".to_owned(),
+                    Box::new(ExternalLibraryDependency::Runtime)
+                ),
+                ExternalLibraryEntry::new(
+                    "world".to_owned(),
+                    Box::new(ExternalLibraryDependency::Runtime)
+                ),
+            ]
+        );
+
+        // check unified external type
+        assert_eq!(
+            index_entry.unified_external_type_entries,
+            vec![
+                TypeEntry::new(
+                    vec![OperandDataType::I32, OperandDataType::I32],
+                    vec![OperandDataType::I32]
+                ),
+                TypeEntry::new(vec![OperandDataType::I32], vec![OperandDataType::I32]),
+                TypeEntry::new(vec![OperandDataType::I32, OperandDataType::I32], vec![]),
+                TypeEntry::new(vec![OperandDataType::I32], vec![]),
+                TypeEntry::new(vec![], vec![OperandDataType::I32]),
+                TypeEntry::new(vec![], vec![]),
+            ]
+        );
+
+        // check unified external function list
+        assert_eq!(
+            index_entry.unified_external_function_entries,
+            vec![
+                ExternalFunctionEntry::new("x".to_owned(), 2, 0),
+                ExternalFunctionEntry::new("b".to_owned(), 0, 1),
+                ExternalFunctionEntry::new("m".to_owned(), 1, 2),
+                ExternalFunctionEntry::new("y".to_owned(), 2, 3),
+                //
+                ExternalFunctionEntry::new("n".to_owned(), 1, 3),
+                ExternalFunctionEntry::new("a".to_owned(), 0, 0),
+                ExternalFunctionEntry::new("p".to_owned(), 3, 4),
+                ExternalFunctionEntry::new("q".to_owned(), 3, 5),
+            ]
+        );
+
+        // check external function index list
+        assert_eq!(
+            index_entry.external_function_index_entries[0].index_entries,
+            vec![
+                ExternalFunctionIndexEntry::new(0),
+                ExternalFunctionIndexEntry::new(1),
+                ExternalFunctionIndexEntry::new(2),
+                ExternalFunctionIndexEntry::new(3),
+            ]
+        );
+
+        assert_eq!(
+            index_entry.external_function_index_entries[1].index_entries,
+            vec![
+                ExternalFunctionIndexEntry::new(2),
+                ExternalFunctionIndexEntry::new(4),
+                ExternalFunctionIndexEntry::new(5),
+                ExternalFunctionIndexEntry::new(6),
+                ExternalFunctionIndexEntry::new(7),
+            ]
+        );
+
+        assert_eq!(
+            index_entry.external_function_index_entries[2].index_entries,
+            vec![
+                ExternalFunctionIndexEntry::new(5),
+                ExternalFunctionIndexEntry::new(1),
+            ]
+        );
+
+        // check bytecodes
+        assert_eq!(
+            format_bytecode_as_text(&image_common_entries[0].function_entries[0].code),
+            "\
+0x0000  40 01 00 00  53 00 00 00    imm_i32           0x00000053
+0x0008  40 01 00 00  59 00 00 00    imm_i32           0x00000059
+0x0010  04 04 00 00  00 00 00 00    extcall           idx:0
+0x0018  40 01 00 00  61 00 00 00    imm_i32           0x00000061
+0x0020  04 04 00 00  01 00 00 00    extcall           idx:1
+0x0028  40 01 00 00  73 00 00 00    imm_i32           0x00000073
+0x0030  40 01 00 00  79 00 00 00    imm_i32           0x00000079
+0x0038  04 04 00 00  02 00 00 00    extcall           idx:2
+0x0040  40 01 00 00  87 00 00 00    imm_i32           0x00000087
+0x0048  04 04 00 00  03 00 00 00    extcall           idx:3
+0x0050  c0 03                       end"
+        );
+
+        assert_eq!(
+            format_bytecode_as_text(&image_common_entries[1].function_entries[0].code),
+            "\
+0x0000  40 01 00 00  23 00 00 00    imm_i32           0x00000023
+0x0008  40 01 00 00  29 00 00 00    imm_i32           0x00000029
+0x0010  04 04 00 00  00 00 00 00    extcall           idx:0
+0x0018  40 01 00 00  31 00 00 00    imm_i32           0x00000031
+0x0020  04 04 00 00  01 00 00 00    extcall           idx:1
+0x0028  40 01 00 00  37 00 00 00    imm_i32           0x00000037
+0x0030  40 01 00 00  41 00 00 00    imm_i32           0x00000041
+0x0038  04 04 00 00  02 00 00 00    extcall           idx:2
+0x0040  04 04 00 00  03 00 00 00    extcall           idx:3
+0x0048  04 04 00 00  04 00 00 00    extcall           idx:4
+0x0050  c0 03                       end"
+        );
+
+        assert_eq!(
+            format_bytecode_as_text(&image_common_entries[2].function_entries[0].code),
+            "\
+0x0000  40 01 00 00  11 00 00 00    imm_i32           0x00000011
+0x0008  40 01 00 00  13 00 00 00    imm_i32           0x00000013
+0x0010  04 04 00 00  00 00 00 00    extcall           idx:0
+0x0018  40 01 00 00  17 00 00 00    imm_i32           0x00000017
+0x0020  04 04 00 00  01 00 00 00    extcall           idx:1
+0x0028  c0 03                       end"
+        );
     }
 }

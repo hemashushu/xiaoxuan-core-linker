@@ -1,5 +1,5 @@
 [package]
-name = "linker"
+name = "anc-linker"
 version = "0.2.0"
 edition = "2021"
 

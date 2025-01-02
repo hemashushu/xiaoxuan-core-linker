@@ -769,14 +769,15 @@ pub fn merge_external_function_entries(
 
         // check each entry
         for entry_source in entries_source.iter() {
-            let merged_external_library_index = external_library_remap_indices_list
+            let external_library_index_merged = external_library_remap_indices_list
                 [submodule_index][entry_source.external_library_index];
-            let merged_type_index =
-                type_remap_indices_list[submodule_index][entry_source.type_index];
 
+            // how to determine if two external functions are the same?
+            // Is it just checking the function name like in C/ELF programs,
+            // includes the library name?
             let pos_merged_opt = entries_merged.iter().position(|item| {
                 item.name == entry_source.name
-                    && item.external_library_index == merged_external_library_index
+                    && item.external_library_index == external_library_index_merged
             });
 
             match pos_merged_opt {
@@ -788,10 +789,13 @@ pub fn merge_external_function_entries(
                 None => {
                     // add entry
                     let pos_new = entries_merged.len();
+                    let type_index_merged =
+                        type_remap_indices_list[submodule_index][entry_source.type_index];
+
                     let entry_merged = ExternalFunctionEntry::new(
                         entry_source.name.clone(),
-                        merged_external_library_index,
-                        merged_type_index,
+                        external_library_index_merged,
+                        type_index_merged,
                     );
                     entries_merged.push(entry_merged);
                     indices.push(pos_new);
