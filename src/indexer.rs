@@ -9,9 +9,9 @@ use std::collections::VecDeque;
 use anc_assembler::assembler::create_self_reference_import_module_entry;
 use anc_image::{
     entry::{
-        DataIndexEntry, DataIndexListEntry, ExternalFunctionEntry, ExternalFunctionIndexEntry,
-        ExternalFunctionIndexListEntry, FunctionIndexEntry, FunctionIndexListEntry,
-        ImageCommonEntry, ImageIndexEntry, ImportModuleEntry, TypeEntry,
+        DataIndexEntry, DataIndexListEntry, EntryPointEntry, ExternalFunctionEntry,
+        ExternalFunctionIndexEntry, ExternalFunctionIndexListEntry, FunctionIndexEntry,
+        FunctionIndexListEntry, ImageCommonEntry, ImageIndexEntry, ImportModuleEntry, TypeEntry,
     },
     module_image::Visibility,
 };
@@ -19,6 +19,7 @@ use anc_isa::{DataSectionType, ModuleDependency};
 
 use crate::{
     linker::RemapIndices, merger::merge_external_library_entries, LinkErrorType, LinkerError,
+    DEFAULT_ENTRY_FUNCTION_NAME,
 };
 
 /// When an application is loaded, all its dependent modules must also be loaded.
@@ -363,30 +364,56 @@ pub fn build_indices(
         })
         .collect::<Vec<_>>();
 
-    // search the entry point: the '_start' function.
-    let expected_full_name = format!("{}::{}", image_commmon_entries[0].name, "_start");
-    let entry_index_opt = image_commmon_entries[0]
+    // search the entry points:
+    // - 'app_module_name::_start' for the default entry point
+    // - 'app_module_name::*::_start' for the execute units
+    // - 'app_module_name::*::test_*' for unit tests
+    //
+    // the entry point names:
+    // - empty string for the default entry point (in file "main.anca").
+    // - submodule name for the executable units in the "app" folder.
+    // - submodule and function name ("test_*") for the unit test (in folder "tests").
+    // todo:
+
+    let default_entry_point_full_name = format!(
+        "{}::{}",
+        image_commmon_entries[0].name, DEFAULT_ENTRY_FUNCTION_NAME
+    );
+    let default_entry_point_index_opt = image_commmon_entries[0]
         .export_function_entries
         .iter()
-        .position(|item| item.full_name == expected_full_name);
+        .position(|item| item.full_name == default_entry_point_full_name);
 
-    let entry_function_public_index = if let Some(entry_index) = entry_index_opt {
-        image_commmon_entries[0].import_function_entries.len() + entry_index
+    let default_entry_point_function_public_index = if let Some(idx) = default_entry_point_index_opt
+    {
+        image_commmon_entries[0].import_function_entries.len() + idx
     } else {
         return Err(LinkerError::new(LinkErrorType::EntryPointNotFound(
-            "_start".to_owned(),
+            DEFAULT_ENTRY_FUNCTION_NAME.to_owned(),
         )));
     };
 
+    // entry point section
+    let entry_point_entries = vec![EntryPointEntry::new(
+        "".to_string(), // the name of default entry point is empty string
+        default_entry_point_function_public_index,
+    )];
+    // let (entry_point_items, unit_names_data) =
+    //     EntryPointSection::convert_from_entries(&entry_point_entries);
+    // let entry_point_section = EntryPointSection {
+    //     items: &entry_point_items,
+    //     unit_names_data: &unit_names_data,
+    // };
+
     let image_index_entry = ImageIndexEntry {
         function_index_list_entries,
+        entry_point_entries,
         data_index_list_entries,
         unified_external_library_entries: external_library_entries,
         unified_external_type_entries: type_entries_merged,
         unified_external_function_entries: external_function_entries_merged,
         external_function_index_entries,
         module_entries: module_entries.to_vec(),
-        entry_function_public_index,
     };
 
     Ok(image_index_entry)
@@ -474,6 +501,7 @@ fn build_external_function_and_type_entries(
 
 #[cfg(test)]
 mod tests {
+
     use pretty_assertions::assert_eq;
 
     use anc_assembler::assembler::assemble_module_node;
@@ -688,12 +716,16 @@ pub fn sub(left:i32, right:i32) -> i32 {    // func pub idx: 0 (target mod idx: 
             vec![],
         );
 
-        let (image_common_entries, index_entry) =
+        let (image_common_entries, image_index_entry) =
             build_index(vec![entry_app, entry_math, entry_std]);
+
+        // save image
+        // let mut f = File::create_new("/tmp/test.anci").unwrap();
+        // write_image_file(&image_common_entries[0], &image_index_entry, &mut f).unwrap();
 
         // check function index list
         assert_eq!(
-            index_entry.function_index_list_entries[0].index_entries,
+            image_index_entry.function_index_list_entries[0].index_entries,
             vec![
                 FunctionIndexEntry::new(2, 0),
                 FunctionIndexEntry::new(1, 0),
@@ -704,7 +736,7 @@ pub fn sub(left:i32, right:i32) -> i32 {    // func pub idx: 0 (target mod idx: 
         );
 
         assert_eq!(
-            index_entry.function_index_list_entries[1].index_entries,
+            image_index_entry.function_index_list_entries[1].index_entries,
             vec![
                 FunctionIndexEntry::new(2, 1),
                 FunctionIndexEntry::new(2, 0),
@@ -713,13 +745,13 @@ pub fn sub(left:i32, right:i32) -> i32 {    // func pub idx: 0 (target mod idx: 
         );
 
         assert_eq!(
-            index_entry.function_index_list_entries[2].index_entries,
+            image_index_entry.function_index_list_entries[2].index_entries,
             vec![FunctionIndexEntry::new(2, 0), FunctionIndexEntry::new(2, 1),]
         );
 
         // check data index list
         assert_eq!(
-            index_entry.data_index_list_entries[0].index_entries,
+            image_index_entry.data_index_list_entries[0].index_entries,
             vec![
                 DataIndexEntry::new(1, 0, DataSectionType::ReadOnly),
                 DataIndexEntry::new(1, 1, DataSectionType::ReadOnly),
@@ -730,7 +762,7 @@ pub fn sub(left:i32, right:i32) -> i32 {    // func pub idx: 0 (target mod idx: 
         );
 
         assert_eq!(
-            index_entry.data_index_list_entries[1].index_entries,
+            image_index_entry.data_index_list_entries[1].index_entries,
             vec![
                 DataIndexEntry::new(2, 0, DataSectionType::Uninit),
                 DataIndexEntry::new(1, 0, DataSectionType::ReadOnly),
@@ -739,13 +771,13 @@ pub fn sub(left:i32, right:i32) -> i32 {    // func pub idx: 0 (target mod idx: 
         );
 
         assert_eq!(
-            index_entry.data_index_list_entries[2].index_entries,
+            image_index_entry.data_index_list_entries[2].index_entries,
             vec![DataIndexEntry::new(2, 0, DataSectionType::Uninit),]
         );
 
         // check module list
         assert_eq!(
-            index_entry.module_entries,
+            image_index_entry.module_entries,
             vec![
                 ImportModuleEntry::new("module".to_owned(), Box::new(ModuleDependency::Current)),
                 ImportModuleEntry::new("math".to_owned(), Box::new(ModuleDependency::Runtime)),
@@ -900,12 +932,12 @@ fn do_this() -> i32 {
             )],
         );
 
-        let (image_common_entries, index_entry) =
+        let (image_common_entries, image_index_entry) =
             build_index(vec![entry_app, entry_math, entry_std]);
 
         // check module list
         assert_eq!(
-            index_entry.module_entries,
+            image_index_entry.module_entries,
             vec![
                 ImportModuleEntry::new("module".to_owned(), Box::new(ModuleDependency::Current)),
                 ImportModuleEntry::new("math".to_owned(), Box::new(ModuleDependency::Runtime)),
@@ -915,7 +947,7 @@ fn do_this() -> i32 {
 
         // check unified external library list
         assert_eq!(
-            index_entry.unified_external_library_entries,
+            image_index_entry.unified_external_library_entries,
             vec![
                 ExternalLibraryEntry::new(
                     "foo".to_owned(),
@@ -938,7 +970,7 @@ fn do_this() -> i32 {
 
         // check unified external type
         assert_eq!(
-            index_entry.unified_external_type_entries,
+            image_index_entry.unified_external_type_entries,
             vec![
                 TypeEntry::new(
                     vec![OperandDataType::I32, OperandDataType::I32],
@@ -954,7 +986,7 @@ fn do_this() -> i32 {
 
         // check unified external function list
         assert_eq!(
-            index_entry.unified_external_function_entries,
+            image_index_entry.unified_external_function_entries,
             vec![
                 ExternalFunctionEntry::new("x".to_owned(), 2, 0),
                 ExternalFunctionEntry::new("b".to_owned(), 0, 1),
@@ -970,7 +1002,7 @@ fn do_this() -> i32 {
 
         // check external function index list
         assert_eq!(
-            index_entry.external_function_index_entries[0].index_entries,
+            image_index_entry.external_function_index_entries[0].index_entries,
             vec![
                 ExternalFunctionIndexEntry::new(0),
                 ExternalFunctionIndexEntry::new(1),
@@ -980,7 +1012,7 @@ fn do_this() -> i32 {
         );
 
         assert_eq!(
-            index_entry.external_function_index_entries[1].index_entries,
+            image_index_entry.external_function_index_entries[1].index_entries,
             vec![
                 ExternalFunctionIndexEntry::new(2),
                 ExternalFunctionIndexEntry::new(4),
@@ -991,7 +1023,7 @@ fn do_this() -> i32 {
         );
 
         assert_eq!(
-            index_entry.external_function_index_entries[2].index_entries,
+            image_index_entry.external_function_index_entries[2].index_entries,
             vec![
                 ExternalFunctionIndexEntry::new(5),
                 ExternalFunctionIndexEntry::new(1),

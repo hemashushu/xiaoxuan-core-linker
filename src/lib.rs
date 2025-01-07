@@ -12,6 +12,8 @@ use std::fmt::Display;
 
 use anc_isa::{DataSectionType, MemoryDataType};
 
+pub const DEFAULT_ENTRY_FUNCTION_NAME: &str = "_start";
+
 #[derive(Debug)]
 pub struct LinkerError {
     pub error_type: LinkErrorType,

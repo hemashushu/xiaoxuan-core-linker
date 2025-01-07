@@ -268,6 +268,8 @@ pub fn link_modules(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use pretty_assertions::assert_eq;
 
     use anc_assembler::assembler::{
@@ -283,8 +285,8 @@ mod tests {
         module_image::{RelocateType, Visibility},
     };
     use anc_isa::{
-        DataSectionType, DependencyShare, ExternalLibraryDependency, ModuleDependency,
-        OperandDataType,
+        DataSectionType, DependencyCondition, DependencyShare, ExternalLibraryDependency,
+        ModuleDependency, OperandDataType,
     };
     use anc_parser_asm::parser::parse_from_str;
 
@@ -491,19 +493,19 @@ fn add(left:i32, right:i32) -> i32 {        // type 2, local 3
             ImportModuleEntry::new(
                 "network".to_owned(),
                 Box::new(ModuleDependency::Share(Box::new(DependencyShare {
-                    repository: None,
+                    repository: String::default(),
                     version: "1.0.1".to_owned(),
-                    values: None,
-                    condition: None,
+                    condition: DependencyCondition::True,
+                    parameters: HashMap::default(),
                 }))),
             ),
             ImportModuleEntry::new(
                 "encoding".to_owned(),
                 Box::new(ModuleDependency::Share(Box::new(DependencyShare {
-                    repository: None,
+                    repository: String::default(),
                     version: "2.1.0".to_owned(),
-                    values: None,
-                    condition: None,
+                    condition: DependencyCondition::True,
+                    parameters: HashMap::default(),
                 }))),
             ),
         ];
@@ -514,30 +516,30 @@ fn add(left:i32, right:i32) -> i32 {        // type 2, local 3
                 // new item
                 "gui".to_owned(),
                 Box::new(ModuleDependency::Share(Box::new(DependencyShare {
-                    repository: None,
+                    repository: String::default(),
                     version: "1.3.4".to_owned(),
-                    values: None,
-                    condition: None,
+                    condition: DependencyCondition::True,
+                    parameters: HashMap::default(),
                 }))),
             ),
             ImportModuleEntry::new(
                 // updated item
                 "encoding".to_owned(),
                 Box::new(ModuleDependency::Share(Box::new(DependencyShare {
-                    repository: None,
+                    repository: String::default(),
                     version: "2.2.0".to_owned(),
-                    values: None,
-                    condition: None,
+                    condition: DependencyCondition::True,
+                    parameters: HashMap::default(),
                 }))),
             ),
             ImportModuleEntry::new(
                 // identical item
                 "network".to_owned(),
                 Box::new(ModuleDependency::Share(Box::new(DependencyShare {
-                    repository: None,
+                    repository: String::default(),
                     version: "1.0.1".to_owned(),
-                    values: None,
-                    condition: None,
+                    condition: DependencyCondition::True,
+                    parameters: HashMap::default(),
                 }))),
             ),
         ];
@@ -552,30 +554,30 @@ fn add(left:i32, right:i32) -> i32 {        // type 2, local 3
             ImportModuleEntry::new(
                 "network".to_owned(),
                 Box::new(ModuleDependency::Share(Box::new(DependencyShare {
-                    repository: None,
+                    repository: String::default(),
                     version: "1.0.1".to_owned(),
-                    values: None,
-                    condition: None,
+                    condition: DependencyCondition::True,
+                    parameters: HashMap::default(),
                 }))),
             ),
             // this item should be the version "2.2.0" instead of "2.1.0".
             ImportModuleEntry::new(
                 "encoding".to_owned(),
                 Box::new(ModuleDependency::Share(Box::new(DependencyShare {
-                    repository: None,
+                    repository: String::default(),
                     version: "2.2.0".to_owned(),
-                    values: None,
-                    condition: None,
+                    condition: DependencyCondition::True,
+                    parameters: HashMap::default(),
                 }))),
             ),
             // this item is new added.
             ImportModuleEntry::new(
                 "gui".to_owned(),
                 Box::new(ModuleDependency::Share(Box::new(DependencyShare {
-                    repository: None,
+                    repository: String::default(),
                     version: "1.3.4".to_owned(),
-                    values: None,
-                    condition: None,
+                    condition: DependencyCondition::True,
+                    parameters: HashMap::default(),
                 }))),
             ),
         ];
