@@ -9,9 +9,10 @@ use std::collections::VecDeque;
 use anc_assembler::assembler::create_self_reference_import_module_entry;
 use anc_image::{
     entry::{
-        DataIndexEntry, DataIndexListEntry, EntryPointEntry, ExternalFunctionEntry,
-        ExternalFunctionIndexEntry, ExternalFunctionIndexListEntry, FunctionIndexEntry,
-        FunctionIndexListEntry, ImageCommonEntry, ImageIndexEntry, ImportModuleEntry, TypeEntry,
+        DataIndexEntry, DataIndexListEntry, DependentModuleEntry, EntryPointEntry,
+        ExternalFunctionEntry, ExternalFunctionIndexEntry, ExternalFunctionIndexListEntry,
+        FunctionIndexEntry, FunctionIndexListEntry, ImageCommonEntry, ImageIndexEntry,
+        ImportModuleEntry, TypeEntry,
     },
     module_image::Visibility,
 };
@@ -64,9 +65,7 @@ use crate::{
 /// requires:
 /// - the first module should be the application itself.
 /// - all dependent modules should be resolved and have no conflict.
-pub fn sort_modules(
-    mut image_common_entries: Vec<ImageCommonEntry>,
-) -> (Vec<ImageCommonEntry>, Vec<ImportModuleEntry>) {
+pub fn sort_modules(image_common_entries: &mut [ImageCommonEntry]) -> Vec<ImportModuleEntry> {
     let mut dependencies: Vec<(ImportModuleEntry, usize)> = vec![]; // all dependencies
     let mut queue: VecDeque<(&ImageCommonEntry, usize)> = VecDeque::new();
 
@@ -155,7 +154,7 @@ pub fn sort_modules(
     // replace the self reference module with the name of "module"
     entries[0] = self_reference_module;
 
-    (image_common_entries, entries)
+    entries
 }
 
 pub fn build_indices(
@@ -398,12 +397,21 @@ pub fn build_indices(
         "".to_string(), // the name of default entry point is empty string
         default_entry_point_function_public_index,
     )];
+
     // let (entry_point_items, unit_names_data) =
     //     EntryPointSection::convert_from_entries(&entry_point_entries);
     // let entry_point_section = EntryPointSection {
     //     items: &entry_point_items,
     //     unit_names_data: &unit_names_data,
     // };
+
+    let dependent_module_entries = module_entries
+        .iter()
+        .map(|item| {
+            let hash = [0_u8; 32]; // todo
+            DependentModuleEntry::new(item.name.clone(), item.value.clone(), hash)
+        })
+        .collect::<Vec<_>>();
 
     let image_index_entry = ImageIndexEntry {
         function_index_list_entries,
@@ -413,7 +421,7 @@ pub fn build_indices(
         unified_external_type_entries: type_entries_merged,
         unified_external_function_entries: external_function_entries_merged,
         external_function_index_entries,
-        module_entries: module_entries.to_vec(),
+        dependent_module_entries,
     };
 
     Ok(image_index_entry)
@@ -508,9 +516,9 @@ mod tests {
     use anc_image::{
         bytecode_reader::format_bytecode_as_text,
         entry::{
-            DataIndexEntry, ExternalFunctionEntry, ExternalFunctionIndexEntry,
-            ExternalLibraryEntry, FunctionIndexEntry, ImageCommonEntry, ImageIndexEntry,
-            ImportModuleEntry, TypeEntry,
+            DataIndexEntry, DependentModuleEntry, ExternalFunctionEntry,
+            ExternalFunctionIndexEntry, ExternalLibraryEntry, FunctionIndexEntry, ImageCommonEntry,
+            ImageIndexEntry, ImportModuleEntry, TypeEntry,
         },
         module_image::ImageType,
     };
@@ -544,9 +552,9 @@ mod tests {
     }
 
     fn build_index(
-        original_image_common_entries: Vec<ImageCommonEntry>,
+        mut image_common_entries: Vec<ImageCommonEntry>,
     ) -> (Vec<ImageCommonEntry>, ImageIndexEntry) {
-        let (image_common_entries, module_entries) = sort_modules(original_image_common_entries);
+        let module_entries = sort_modules(&mut image_common_entries);
         let image_index_entry = build_indices(&image_common_entries, &module_entries).unwrap();
         (image_common_entries, image_index_entry)
     }
@@ -583,7 +591,7 @@ mod tests {
             }
         };
 
-        let modules = vec![
+        let mut modules = vec![
             make_module_entry("a", &["b", "c", "d", "e"]),
             make_module_entry("b", &["j"]),
             make_module_entry("c", &["g"]),
@@ -596,11 +604,11 @@ mod tests {
             make_module_entry("j", &[]),
         ];
 
-        let (sorted_modules, dependencies) = sort_modules(modules);
+        let dependencies = sort_modules(&mut modules);
 
         assert_eq!(
             "a,b,c,e,f,d,g,h,i,j",
-            sorted_modules
+            modules
                 .iter()
                 .map(|item| item.name.to_owned())
                 .collect::<Vec<String>>()
@@ -777,11 +785,23 @@ pub fn sub(left:i32, right:i32) -> i32 {    // func pub idx: 0 (target mod idx: 
 
         // check module list
         assert_eq!(
-            image_index_entry.module_entries,
+            image_index_entry.dependent_module_entries,
             vec![
-                ImportModuleEntry::new("module".to_owned(), Box::new(ModuleDependency::Current)),
-                ImportModuleEntry::new("math".to_owned(), Box::new(ModuleDependency::Runtime)),
-                ImportModuleEntry::new("std".to_owned(), Box::new(ModuleDependency::Runtime)),
+                DependentModuleEntry::new(
+                    "module".to_owned(),
+                    Box::new(ModuleDependency::Current),
+                    [0_u8; 32]
+                ),
+                DependentModuleEntry::new(
+                    "math".to_owned(),
+                    Box::new(ModuleDependency::Runtime),
+                    [0_u8; 32]
+                ),
+                DependentModuleEntry::new(
+                    "std".to_owned(),
+                    Box::new(ModuleDependency::Runtime),
+                    [0_u8; 32]
+                ),
             ]
         );
 
@@ -937,11 +957,23 @@ fn do_this() -> i32 {
 
         // check module list
         assert_eq!(
-            image_index_entry.module_entries,
+            image_index_entry.dependent_module_entries,
             vec![
-                ImportModuleEntry::new("module".to_owned(), Box::new(ModuleDependency::Current)),
-                ImportModuleEntry::new("math".to_owned(), Box::new(ModuleDependency::Runtime)),
-                ImportModuleEntry::new("std".to_owned(), Box::new(ModuleDependency::Runtime)),
+                DependentModuleEntry::new(
+                    "module".to_owned(),
+                    Box::new(ModuleDependency::Current),
+                    [0_u8; 32]
+                ),
+                DependentModuleEntry::new(
+                    "math".to_owned(),
+                    Box::new(ModuleDependency::Runtime),
+                    [0_u8; 32]
+                ),
+                DependentModuleEntry::new(
+                    "std".to_owned(),
+                    Box::new(ModuleDependency::Runtime),
+                    [0_u8; 32]
+                ),
             ]
         );
 

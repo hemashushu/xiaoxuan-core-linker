@@ -44,7 +44,7 @@ pub struct RemapTable<'a> {
 /// It's something like the "static linking".
 pub fn link_modules(
     target_module_name: &str,
-    generate_shared_module: bool,
+    check_internal_reference_resolved: bool,
     submodule_entries: &[ImageCommonEntry],
 ) -> Result<ImageCommonEntry, LinkerError> {
     // merge type entries
@@ -208,12 +208,8 @@ pub fn link_modules(
         &remap_table_list,
     );
 
-    // validate the shared-module
-    if generate_shared_module {
-        // check imported functons and data,
-        // to make sure there are no functions or data
-        // imported from the current module.
-
+    // Check that the internally referenced functions and data have all been resolved.
+    if check_internal_reference_resolved {
         let the_current_module = create_self_reference_import_module_entry();
         let pos_opt = import_module_entries
             .iter()
@@ -238,7 +234,7 @@ pub fn link_modules(
         }
     }
 
-    let image_type = if generate_shared_module {
+    let image_type = if check_internal_reference_resolved {
         ImageType::SharedModule
     } else {
         ImageType::ObjectFile
@@ -370,7 +366,7 @@ fn add(left:i32, right:i32) -> i32 {        // type 2, local 3
 
         let submodules = vec![module0, module1];
         let submodule_entries = assemble_submodules(&submodules, &[], &[]);
-        let merged_entry = link_modules("merged", false, &submodule_entries).unwrap();
+        let merged_entry = link_modules("merged", true, &submodule_entries).unwrap();
 
         // type
         assert_eq!(
@@ -663,7 +659,7 @@ fn bar() {
 
         let submodules = vec![module0, module1, module2];
         let submodule_entries = assemble_submodules(&submodules, &[], &[]);
-        let merged_entry = link_modules("merged", false, &submodule_entries).unwrap();
+        let merged_entry = link_modules("merged", true, &submodule_entries).unwrap();
 
         // import modules
         assert_eq!(
@@ -866,7 +862,7 @@ fn bar() -> i32 {
         let submodules = vec![module0, module1];
         let submodule_entries =
             assemble_submodules(&submodules, &[], &[libabc.clone(), libdef.clone()]);
-        let merged_entry = link_modules("merged", false, &submodule_entries).unwrap();
+        let merged_entry = link_modules("merged", true, &submodule_entries).unwrap();
 
         // types
         assert_eq!(
@@ -999,7 +995,7 @@ fn add(left:i32, right:i32)->i32 {
 
         let submodules = vec![module0, module1, module2];
         let submodule_entries = assemble_submodules(&submodules, &[], &[]);
-        let merged_entry = link_modules("merged", false, &submodule_entries).unwrap();
+        let merged_entry = link_modules("merged", true, &submodule_entries).unwrap();
 
         // import modules
         assert_eq!(
