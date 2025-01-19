@@ -9,6 +9,7 @@ use anc_image::{
     entry::{ExportFunctionEntry, ImageCommonEntry},
     module_image::ImageType,
 };
+use anc_isa::EffectiveVersion;
 
 use crate::{
     merger::{
@@ -44,6 +45,7 @@ pub struct RemapTable<'a> {
 /// It's something like the "static linking".
 pub fn link_modules(
     target_module_name: &str,
+    target_module_version: &EffectiveVersion,
     check_internal_reference_resolved: bool,
     submodule_entries: &[ImageCommonEntry],
 ) -> Result<ImageCommonEntry, LinkerError> {
@@ -242,6 +244,7 @@ pub fn link_modules(
 
     let merged_image_common_entry = ImageCommonEntry {
         name: target_module_name.to_owned(),
+        version: *target_module_version,
         image_type,
         import_module_entries,
         import_function_entries,
@@ -281,8 +284,8 @@ mod tests {
         module_image::{RelocateType, Visibility},
     };
     use anc_isa::{
-        DataSectionType, DependencyCondition, DependencyShare, ExternalLibraryDependency,
-        ModuleDependency, OperandDataType,
+        DataSectionType, DependencyCondition, DependencyShare, EffectiveVersion,
+        ExternalLibraryDependency, ModuleDependency, OperandDataType,
     };
     use anc_parser_asm::parser::parse_from_str;
 
@@ -366,7 +369,13 @@ fn add(left:i32, right:i32) -> i32 {        // type 2, local 3
 
         let submodules = vec![module0, module1];
         let submodule_entries = assemble_submodules(&submodules, &[], &[]);
-        let merged_entry = link_modules("merged", true, &submodule_entries).unwrap();
+        let merged_entry = link_modules(
+            "merged",
+            &EffectiveVersion::new(0, 0, 0),
+            true,
+            &submodule_entries,
+        )
+        .unwrap();
 
         // type
         assert_eq!(
@@ -659,7 +668,13 @@ fn bar() {
 
         let submodules = vec![module0, module1, module2];
         let submodule_entries = assemble_submodules(&submodules, &[], &[]);
-        let merged_entry = link_modules("merged", true, &submodule_entries).unwrap();
+        let merged_entry = link_modules(
+            "merged",
+            &EffectiveVersion::new(0, 0, 0),
+            true,
+            &submodule_entries,
+        )
+        .unwrap();
 
         // import modules
         assert_eq!(
@@ -862,7 +877,13 @@ fn bar() -> i32 {
         let submodules = vec![module0, module1];
         let submodule_entries =
             assemble_submodules(&submodules, &[], &[libabc.clone(), libdef.clone()]);
-        let merged_entry = link_modules("merged", true, &submodule_entries).unwrap();
+        let merged_entry = link_modules(
+            "merged",
+            &EffectiveVersion::new(0, 0, 0),
+            true,
+            &submodule_entries,
+        )
+        .unwrap();
 
         // types
         assert_eq!(
@@ -995,7 +1016,13 @@ fn add(left:i32, right:i32)->i32 {
 
         let submodules = vec![module0, module1, module2];
         let submodule_entries = assemble_submodules(&submodules, &[], &[]);
-        let merged_entry = link_modules("merged", true, &submodule_entries).unwrap();
+        let merged_entry = link_modules(
+            "merged",
+            &EffectiveVersion::new(0, 0, 0),
+            true,
+            &submodule_entries,
+        )
+        .unwrap();
 
         // import modules
         assert_eq!(
@@ -1157,7 +1184,12 @@ fn do_this() {
 
         let submodules = vec![module0, module1];
         let submodule_entries = assemble_submodules(&submodules, &[], &[]);
-        let merged_result = link_modules("merged", true, &submodule_entries);
+        let merged_result = link_modules(
+            "merged",
+            &EffectiveVersion::new(0, 0, 0),
+            true,
+            &submodule_entries,
+        );
 
         assert!(matches!(
             merged_result,
@@ -1189,7 +1221,12 @@ data d0:i32 = 0x11
 
         let submodules = vec![module0, module1];
         let submodule_entries = assemble_submodules(&submodules, &[], &[]);
-        let merged_result = link_modules("merged", true, &submodule_entries);
+        let merged_result = link_modules(
+            "merged",
+            &EffectiveVersion::new(0, 0, 0),
+            true,
+            &submodule_entries,
+        );
 
         assert!(matches!(
             merged_result,

@@ -522,7 +522,10 @@ mod tests {
         },
         module_image::ImageType,
     };
-    use anc_isa::{DataSectionType, ExternalLibraryDependency, ModuleDependency, OperandDataType};
+    use anc_isa::{
+        DataSectionType, EffectiveVersion, ExternalLibraryDependency, ModuleDependency,
+        OperandDataType,
+    };
     use anc_parser_asm::parser::parse_from_str;
 
     use crate::indexer::build_indices;
@@ -573,6 +576,7 @@ mod tests {
 
             ImageCommonEntry {
                 name: name.to_owned(),
+                version: EffectiveVersion::new(0, 0, 0),
                 image_type: ImageType::SharedModule,
                 import_module_entries,
                 import_function_entries: vec![],

@@ -12,7 +12,10 @@ use anc_image::{
     },
     module_image::RelocateType,
 };
-use anc_isa::{DataSectionType, ExternalLibraryDependency, ModuleDependency};
+use anc_isa::{
+    DataSectionType, EffectiveVersion, ExternalLibraryDependency, ModuleDependency,
+    VersionCompatibility,
+};
 
 use crate::{
     linker::{RemapIndices, RemapTable},
@@ -168,21 +171,21 @@ pub fn merge_import_module_entries(
                             ModuleDependency::Share(share_source) => {
                                 if let ModuleDependency::Share(share_merged) = dependency_merged {
                                     // compare version
-                                    match compare_version(
-                                        &share_source.version,
-                                        &share_merged.version,
-                                    ) {
-                                        VersionCompareResult::Equals
-                                        | VersionCompareResult::LessThan => {
+                                    match EffectiveVersion::from_str(&share_source.version)
+                                        .compatible(&EffectiveVersion::from_str(
+                                            &share_merged.version,
+                                        )) {
+                                        VersionCompatibility::Equals
+                                        | VersionCompatibility::LessThan => {
                                             // keep:
                                             // the target (merged) item is newer than or equals to the source one.
                                         }
-                                        VersionCompareResult::GreaterThan => {
+                                        VersionCompatibility::GreaterThan => {
                                             // replace:
                                             // the target (merged) item is older than the source one
                                             entries_merged[pos_merged] = entry_source.clone()
                                         }
-                                        VersionCompareResult::Different => {
+                                        VersionCompatibility::Conflict => {
                                             return Err(LinkerError::new(
                                                 LinkErrorType::DependentVersionConflict(
                                                     module_name.to_owned(),
@@ -686,21 +689,21 @@ pub fn merge_external_library_entries(
                                     dependency_merged
                                 {
                                     // compare version
-                                    match compare_version(
-                                        &share_source.version,
-                                        &share_merged.version,
-                                    ) {
-                                        VersionCompareResult::Equals
-                                        | VersionCompareResult::LessThan => {
+                                    match EffectiveVersion::from_str(&share_source.version)
+                                        .compatible(&EffectiveVersion::from_str(
+                                            &share_merged.version,
+                                        )) {
+                                        VersionCompatibility::Equals
+                                        | VersionCompatibility::LessThan => {
                                             // keep:
                                             // the target (merged) item is newer than or equals to the source one.
                                         }
-                                        VersionCompareResult::GreaterThan => {
+                                        VersionCompatibility::GreaterThan => {
                                             // replace:
                                             // the target (merged) item is older than the source one
                                             entries_merged[pos_merged] = entry_source.clone()
                                         }
-                                        VersionCompareResult::Different => {
+                                        VersionCompatibility::Conflict => {
                                             return Err(LinkerError::new(
                                                 LinkErrorType::DependentVersionConflict(
                                                     library_name.to_owned(),
@@ -884,87 +887,6 @@ pub fn merge_function_entries(
 //     let (right_module_name, _) = right_full_name.split_once(NAME_PATH_SEPARATOR).unwrap();
 //     left_module_name != right_module_name
 // }
-
-enum VersionCompareResult {
-    Equals,
-    GreaterThan,
-    LessThan,
-    Different,
-}
-
-// version conflicts
-// -----------------
-//
-// If a shared module appears multiple times in the dependency tree with
-// different versions and the major version numbers differ, the compiler
-// will complain. However, if the major version numbers are the same, the
-// highest minor version wil be selected.
-//
-// Note that this implies that in the actual application runtime, the minor
-// version of a module might be higher than what the application explicitly
-// declares. This is permissible because minor version updates are expected to
-// maintain backward compatibility.
-//
-// For instance, if an application depends on a module with version 1.4.0, the
-// actual runtime version of that module could be anywhere from 1.4.0 to 1.99.99.
-//
-// For the local and remote file-base shared modules and libraries,
-// because they lack version information, if their sources
-// (e.g., file paths or URLs) do not match, the compilation will fail.
-//
-// zero major version
-// ------------------
-// When a shared module is in beta stage, the major version number can
-// be set to zero.
-// A zero major version indicates that each minor version is incompatible. If an
-// application's dependency tree contains minor version inconsistencies in modules
-// with a zero major version, compilation will fail.
-
-fn compare_version(left: &str, right: &str) -> VersionCompareResult {
-    let left_parts = left
-        .split('.')
-        .map(
-            |item| item.parse::<u16>().unwrap(), /* u16::from_str_radix(item, 10).unwrap() */
-        )
-        .collect::<Vec<_>>();
-
-    let right_parts = right
-        .split('.')
-        .map(
-            |item| item.parse::<u16>().unwrap(), /* u16::from_str_radix(item, 10).unwrap() */
-        )
-        .collect::<Vec<_>>();
-
-    if left_parts[0] != right_parts[0] {
-        // major differ
-        VersionCompareResult::Different
-    } else if left_parts[0] == 0 {
-        // zero major
-        if left_parts[1] != right_parts[1] {
-            // minor differ
-            VersionCompareResult::Different
-        } else if left_parts[2] > right_parts[2] {
-            VersionCompareResult::GreaterThan
-        } else if left_parts[2] < right_parts[2] {
-            VersionCompareResult::LessThan
-        } else {
-            VersionCompareResult::Equals
-        }
-    } else {
-        // normal major
-        if left_parts[1] > right_parts[1] {
-            VersionCompareResult::GreaterThan
-        } else if left_parts[1] < right_parts[1] {
-            VersionCompareResult::LessThan
-        } else if left_parts[2] > right_parts[2] {
-            VersionCompareResult::GreaterThan
-        } else if left_parts[2] < right_parts[2] {
-            VersionCompareResult::LessThan
-        } else {
-            VersionCompareResult::Equals
-        }
-    }
-}
 
 /// the map table of importing items to the merged items.
 ///
