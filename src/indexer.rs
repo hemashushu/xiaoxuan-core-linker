@@ -17,10 +17,11 @@ use anc_image::{
     module_image::Visibility,
 };
 use anc_isa::{DataSectionType, ModuleDependency};
+use regex_anre::Regex;
 
 use crate::{
-    linker::RemapIndices, merger::merge_external_library_entries, LinkErrorType, LinkerError,
-    DEFAULT_ENTRY_FUNCTION_NAME,
+    linker::{merge_external_library_entries, RemapIndices},
+    LinkErrorType, LinkerError, DEFAULT_ENTRY_FUNCTION_NAME,
 };
 
 /// When an application is loaded, all its dependent modules must also be loaded.
@@ -159,7 +160,7 @@ pub fn sort_modules(image_common_entries: &mut [ImageCommonEntry]) -> Vec<Import
 
 pub fn build_indices(
     image_commmon_entries: &[ImageCommonEntry],
-    module_entries: &[ImportModuleEntry], // all dependencies
+    import_module_entries: &[ImportModuleEntry], // all dependencies
 ) -> Result<ImageIndexEntry, LinkerError> {
     let mut function_index_list_entries: Vec<FunctionIndexListEntry> = vec![];
     for (source_module_index, source_module_entry) in image_commmon_entries.iter().enumerate() {
@@ -363,49 +364,9 @@ pub fn build_indices(
         })
         .collect::<Vec<_>>();
 
-    // search the entry points:
-    // - 'app_module_name::_start' for the default entry point
-    // - 'app_module_name::*::_start' for the execute units
-    // - 'app_module_name::*::test_*' for unit tests
-    //
-    // the entry point names:
-    // - empty string for the default entry point (in file "main.anca").
-    // - submodule name for the executable units in the "app" folder.
-    // - submodule and function name ("test_*") for the unit test (in folder "tests").
-    // todo:
+    let entry_point_entries = find_entry_points(&image_commmon_entries[0]);
 
-    let default_entry_point_full_name = format!(
-        "{}::{}",
-        image_commmon_entries[0].name, DEFAULT_ENTRY_FUNCTION_NAME
-    );
-    let default_entry_point_index_opt = image_commmon_entries[0]
-        .export_function_entries
-        .iter()
-        .position(|item| item.full_name == default_entry_point_full_name);
-
-    let default_entry_point_function_public_index = if let Some(idx) = default_entry_point_index_opt
-    {
-        image_commmon_entries[0].import_function_entries.len() + idx
-    } else {
-        return Err(LinkerError::new(LinkErrorType::EntryPointNotFound(
-            DEFAULT_ENTRY_FUNCTION_NAME.to_owned(),
-        )));
-    };
-
-    // entry point section
-    let entry_point_entries = vec![EntryPointEntry::new(
-        "".to_string(), // the name of default entry point is empty string
-        default_entry_point_function_public_index,
-    )];
-
-    // let (entry_point_items, unit_names_data) =
-    //     EntryPointSection::convert_from_entries(&entry_point_entries);
-    // let entry_point_section = EntryPointSection {
-    //     items: &entry_point_items,
-    //     unit_names_data: &unit_names_data,
-    // };
-
-    let dependent_module_entries = module_entries
+    let dependent_module_entries = import_module_entries
         .iter()
         .map(|item| {
             let hash = [0_u8; 32]; // todo
@@ -507,6 +468,83 @@ fn build_external_function_and_type_entries(
     )
 }
 
+/// Search the entry points:
+/// - 'app_module_name::_start' for the default entry point, entry point name is "_start".
+/// - 'app_module_name::app::{submodule_name}::_start' for the executable units, entry point name is the name of submodule.
+/// - 'app_module_name::tests::{submodule_name}::test_*' for unit tests, entry point name is "submodule_name::test_*".
+fn find_entry_points(main_module_entry: &ImageCommonEntry) -> Vec<EntryPointEntry> {
+    let mut entry_point_entries: Vec<EntryPointEntry> = vec![];
+
+    let export_function_entries = &main_module_entry.export_function_entries;
+    let import_functions_count = main_module_entry.import_function_entries.len();
+    let module_name = &main_module_entry.name;
+
+    // find the default entry
+    let default_entry_point_full_name = format!("{}::{}", module_name, DEFAULT_ENTRY_FUNCTION_NAME);
+    let default_entry_point_internal_index_opt = export_function_entries
+        .iter()
+        .position(|item| item.full_name == default_entry_point_full_name);
+
+    if let Some(function_internal_index) = default_entry_point_internal_index_opt {
+        let function_public_index = import_functions_count + function_internal_index;
+
+        entry_point_entries.push(EntryPointEntry::new(
+            DEFAULT_ENTRY_FUNCTION_NAME.to_owned(),
+            function_public_index,
+        ));
+    };
+
+    // find the executable units
+    let regex_bin = Regex::from_anre(&format!(
+        r#"
+        start, "{}::app::", (char_word+).name(unit_name), "::{}", end
+        "#,
+        module_name, DEFAULT_ENTRY_FUNCTION_NAME
+    ))
+    .unwrap();
+
+    for (function_internal_index, function_full_name) in export_function_entries
+        .iter()
+        .map(|item| &item.full_name)
+        .enumerate()
+    {
+        if let Some(caps) = regex_bin.captures(function_full_name) {
+            let unit_name = caps.name("unit_name").unwrap().as_str();
+            let function_public_index = import_functions_count + function_internal_index;
+            entry_point_entries.push(EntryPointEntry::new(
+                unit_name.to_owned(),
+                function_public_index,
+            ));
+        }
+    }
+
+    // find the unit test functions
+    let regex_bin = Regex::from_anre(&format!(
+        r#"
+        start, "{}::tests::", (char_word+, "::" , "test_", char_word+).name(unit_name), end
+        "#,
+        module_name
+    ))
+    .unwrap();
+
+    for (function_internal_index, function_full_name) in export_function_entries
+        .iter()
+        .map(|item| &item.full_name)
+        .enumerate()
+    {
+        if let Some(caps) = regex_bin.captures(function_full_name) {
+            let unit_name = caps.name("unit_name").unwrap().as_str();
+            let function_public_index = import_functions_count + function_internal_index;
+            entry_point_entries.push(EntryPointEntry::new(
+                unit_name.to_owned(),
+                function_public_index,
+            ));
+        }
+    }
+
+    entry_point_entries
+}
+
 #[cfg(test)]
 mod tests {
 
@@ -516,7 +554,7 @@ mod tests {
     use anc_image::{
         bytecode_reader::format_bytecode_as_text,
         entry::{
-            DataIndexEntry, DependentModuleEntry, ExternalFunctionEntry,
+            DataIndexEntry, DependentModuleEntry, EntryPointEntry, ExternalFunctionEntry,
             ExternalFunctionIndexEntry, ExternalLibraryEntry, FunctionIndexEntry, ImageCommonEntry,
             ImageIndexEntry, ImportModuleEntry, TypeEntry,
         },
@@ -528,38 +566,60 @@ mod tests {
     };
     use anc_parser_asm::parser::parse_from_str;
 
-    use crate::indexer::build_indices;
+    use crate::{indexer::build_indices, linker::link_modules, DEFAULT_ENTRY_FUNCTION_NAME};
 
     use super::sort_modules;
 
+    fn assemble_submodules(
+        submodules: &[(/* fullname */ &str, /* source */ &str)],
+        import_module_entries: &[ImportModuleEntry],
+        external_library_entries: &[ExternalLibraryEntry],
+    ) -> Vec<ImageCommonEntry> {
+        let mut common_entries = vec![];
+
+        for (full_name, source_code) in submodules {
+            let module_node = match parse_from_str(source_code) {
+                Ok(node) => node,
+                Err(parser_error) => {
+                    panic!("{}", parser_error.with_source(source_code));
+                }
+            };
+
+            let image_common_entry = assemble_module_node(
+                &module_node,
+                full_name,
+                import_module_entries,
+                external_library_entries,
+            )
+            .unwrap();
+
+            common_entries.push(image_common_entry);
+        }
+
+        common_entries
+    }
+
     fn build_module(
         module_name: &str,
-        source_code: &str,
-        import_module_entries: Vec<ImportModuleEntry>,
-        external_library_entries: Vec<ExternalLibraryEntry>,
+        submodules: &[(/* fullname */ &str, /* source */ &str)],
+        import_module_entries: &[ImportModuleEntry],
+        external_library_entries: &[ExternalLibraryEntry],
     ) -> ImageCommonEntry {
-        let module_node = match parse_from_str(source_code) {
-            Ok(node) => node,
-            Err(parser_error) => {
-                panic!("{}", parser_error.with_source(source_code));
-            }
-        };
+        let submodule_entries =
+            assemble_submodules(submodules, import_module_entries, external_library_entries);
 
-        assemble_module_node(
-            &module_node,
+        link_modules(
             module_name,
-            &import_module_entries,
-            &external_library_entries,
+            &EffectiveVersion::new(0, 0, 0),
+            true,
+            &submodule_entries,
         )
         .unwrap()
     }
 
-    fn build_index(
-        mut image_common_entries: Vec<ImageCommonEntry>,
-    ) -> (Vec<ImageCommonEntry>, ImageIndexEntry) {
-        let module_entries = sort_modules(&mut image_common_entries);
-        let image_index_entry = build_indices(&image_common_entries, &module_entries).unwrap();
-        (image_common_entries, image_index_entry)
+    fn build_index(image_common_entries: &mut [ImageCommonEntry]) -> ImageIndexEntry {
+        let import_module_entries = sort_modules(image_common_entries);
+        build_indices(image_common_entries, &import_module_entries).unwrap()
     }
 
     #[test]
@@ -632,9 +692,11 @@ mod tests {
     #[test]
     fn test_build_index_functions_and_data() {
         // app, module index = 0
-        let entry_app = build_module(
+        let module_app = build_module(
             "app",
-            r#"
+            &[(
+                "app",
+                r#"
 import fn std::add(i32,i32) -> i32  // func pub idx: 0 (target mod idx: 2, target func inter idx: 0)
 import fn math::inc(i32) -> i32     // func pub idx: 1 (target mod idx: 1, target func inter idx: 0)
 import fn std::sub(i32,i32) -> i32  // func pub idx: 2 (target mod idx: 2, target func inter idx: 1)
@@ -671,17 +733,20 @@ fn test() -> i32 {                  // func pub idx: 4 (target mod idx: 0, targe
             data_load_i32_s(bar)))  // data pub idx: 4
 }
 "#,
-            vec![
+            )],
+            &[
                 ImportModuleEntry::new("math".to_owned(), Box::new(ModuleDependency::Runtime)),
                 ImportModuleEntry::new("std".to_owned(), Box::new(ModuleDependency::Runtime)),
             ],
-            vec![],
+            &[],
         );
 
         // math, module index = 1
-        let entry_math = build_module(
+        let module_math = build_module(
             "math",
-            r#"
+            &[(
+                "math",
+                r#"
 import fn std::sub(i32,i32) -> i32      // func pub idx: 0 (target mod idx: 2, target func inter idx: 1)
 import fn std::add(i32,i32) -> i32      // func pub idx: 1 (target mod idx: 2, target func inter idx: 0)
 import uninit data std::errno type i32  // data pub idx: 0 (target mod idx: 2, target data idx: 0, section: 2)
@@ -699,17 +764,20 @@ pub fn inc(num:i32) -> i32 {            // func pub idx: 2 (target mod idx: 1, t
         local_load_i32_s(num))
 }
 "#,
-            vec![ImportModuleEntry::new(
+            )],
+            &[ImportModuleEntry::new(
                 "std".to_owned(),
                 Box::new(ModuleDependency::Runtime),
             )],
-            vec![],
+            &[],
         );
 
         // std, module index = 2
-        let entry_std = build_module(
+        let module_std = build_module(
             "std",
-            r#"
+            &[(
+                "std",
+                r#"
 pub uninit data errno:i32                   // data pub idx: 0 (target mod idx: 2, target data idx: 0, section: 2)
 
 pub fn add(left:i32, right:i32) -> i32 {    // func pub idx: 0 (target mod idx: 2, target func inter idx: 0)
@@ -724,16 +792,13 @@ pub fn sub(left:i32, right:i32) -> i32 {    // func pub idx: 0 (target mod idx: 
         local_load_i32_s(right))
 }
 "#,
-            vec![],
-            vec![],
+            )],
+            &[],
+            &[],
         );
 
-        let (image_common_entries, image_index_entry) =
-            build_index(vec![entry_app, entry_math, entry_std]);
-
-        // save image
-        // let mut f = File::create_new("/tmp/test.anci").unwrap();
-        // write_image_file(&image_common_entries[0], &image_index_entry, &mut f).unwrap();
+        let mut image_common_entries = vec![module_app, module_math, module_std];
+        let image_index_entry = build_index(&mut image_common_entries);
 
         // check function index list
         assert_eq!(
@@ -866,9 +931,11 @@ pub fn sub(left:i32, right:i32) -> i32 {    // func pub idx: 0 (target mod idx: 
     #[test]
     fn test_build_index_external_functions() {
         // app, module index = 0
-        let entry_app = build_module(
+        let module_app = build_module(
             "app",
-            r#"
+            &[(
+                "app",
+                r#"
 external fn hello::x(i32,i32)-> i32 // internal: lib(2),idx(0)  unified: lib(2),idx(0),type(0)
 external fn foo::b(i32) -> i32      // internal: lib(0),idx(1)  unified: lib(0),idx(1),type(1)
 external fn bar::m(i32, i32)        // internal: lib(1),idx(2)  unified: lib(1),idx(2),type(2)
@@ -882,11 +949,12 @@ fn _start()->i32 {
 }
 
 "#,
-            vec![
+            )],
+            &[
                 ImportModuleEntry::new("math".to_owned(), Box::new(ModuleDependency::Runtime)),
                 ImportModuleEntry::new("std".to_owned(), Box::new(ModuleDependency::Runtime)),
             ],
-            vec![
+            &[
                 ExternalLibraryEntry::new(
                     "foo".to_owned(),
                     Box::new(ExternalLibraryDependency::Runtime),
@@ -903,9 +971,11 @@ fn _start()->i32 {
         );
 
         // math, module index = 1
-        let entry_math = build_module(
+        let module_math = build_module(
             "math",
-            r#"
+            &[(
+                "math",
+                r#"
 external fn bar::m(i32, i32)        // internal: lib(0),idx(0)  unified: lib(1),idx(2),type(2)
 external fn bar::n(i32)             // internal: lib(0),idx(1)  unified: lib(1),idx(4),type(3)
 external fn foo::a(i32,i32)-> i32   // internal: lib(1),idx(2)  unified: lib(0),idx(5),type(0)
@@ -920,8 +990,9 @@ fn do_that() {
     extcall(q)                                  // idx 4
 }
 "#,
-            vec![],
-            vec![
+            )],
+            &[],
+            &[
                 ExternalLibraryEntry::new(
                     "bar".to_owned(),
                     Box::new(ExternalLibraryDependency::Runtime),
@@ -938,9 +1009,11 @@ fn do_that() {
         );
 
         // std, module index = 2
-        let entry_std = build_module(
+        let module_std = build_module(
             "std",
-            r#"
+            &[(
+                "std",
+                r#"
 external fn foo::a(i32,i32)-> i32   // internal: lib(0),idx(0)  unified: lib(0),idx(5),type(0)
 external fn foo::b(i32) -> i32      // internal: lib(0),idx(1)  unified: lib(0),idx(1),type(1)
 
@@ -949,15 +1022,16 @@ fn do_this() -> i32 {
     extcall(b, imm_i32(0x17))                   // idx 1
 }
 "#,
-            vec![],
-            vec![ExternalLibraryEntry::new(
+            )],
+            &[],
+            &[ExternalLibraryEntry::new(
                 "foo".to_owned(),
                 Box::new(ExternalLibraryDependency::Runtime),
             )],
         );
 
-        let (image_common_entries, image_index_entry) =
-            build_index(vec![entry_app, entry_math, entry_std]);
+        let mut image_common_entries = vec![module_app, module_math, module_std];
+        let image_index_entry = build_index(&mut image_common_entries);
 
         // check module list
         assert_eq!(
@@ -1108,6 +1182,112 @@ fn do_this() -> i32 {
 0x0018  40 01 00 00  17 00 00 00    imm_i32           0x00000017
 0x0020  04 04 00 00  01 00 00 00    extcall           idx:1
 0x0028  c0 03                       end"
+        );
+    }
+
+    #[test]
+    fn test_build_index_entry_points() {
+        let module_hello = build_module(
+            "hello",
+            &[
+                (
+                    "hello",
+                    r#"
+fn _start()->i32 {
+    nop()
+}
+
+fn empty() {
+}
+"#,
+                ),
+                (
+                    "hello::app::foo",
+                    r#"
+fn _start()->i32 {
+    nop()
+}
+
+fn empty() {
+}
+"#,
+                ),
+                (
+                    "hello::app::bar",
+                    r#"
+fn _start()->i32 {
+    nop()
+}
+
+fn empty() {
+}
+"#,
+                ),
+                (
+                    "hello::tests::foo",
+                    r#"
+fn test_a()->i32 {
+    nop()
+}
+
+fn test_b()->i32 {
+    nop()
+}
+
+fn empty() {
+}
+"#,
+                ),
+                (
+                    "hello::tests::bar",
+                    r#"
+fn test_c()->i32 {
+    nop()
+}
+
+fn test_d()->i32 {
+    nop()
+}
+
+fn empty() {
+}
+"#,
+                ),
+                (
+                    "hello::tests::common::baz",
+                    r#"
+fn test_e()->i32 {
+    nop()
+}
+
+fn test_f()->i32 {
+    nop()
+}
+
+fn empty() {
+}
+"#,
+                ),
+            ],
+            &[],
+            &[],
+        );
+
+        let mut image_common_entries = vec![module_hello];
+        let image_index_entry = build_index(&mut image_common_entries);
+
+        // check entry point list
+        assert_eq!(
+            image_index_entry.entry_point_entries,
+            vec![
+                EntryPointEntry::new(DEFAULT_ENTRY_FUNCTION_NAME.to_owned(), 0),
+                EntryPointEntry::new("foo".to_owned(), 2),
+                EntryPointEntry::new("bar".to_owned(), 4),
+                EntryPointEntry::new("foo::test_a".to_owned(), 6),
+                EntryPointEntry::new("foo::test_b".to_owned(), 7),
+                EntryPointEntry::new("bar::test_c".to_owned(), 9),
+                EntryPointEntry::new("bar::test_d".to_owned(), 10),
+            ]
         );
     }
 }

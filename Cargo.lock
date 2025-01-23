@@ -44,6 +44,7 @@ dependencies = [
  "anc-parser-asm",
  "ason",
  "pretty_assertions",
+ "regex-anre",
 ]
 
 [[package]]
@@ -231,6 +232,12 @@ checksum = "b5b9d34b8991d19d98081b46eacdd8eb58c6f2b201139f7c5f643cc155a633af"
 dependencies = [
  "proc-macro2",
 ]
+
+[[package]]
+name = "regex-anre"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5711184298c216492bfec7d19204a305f16a83800eb66db5144e627ecce07944"
 
 [[package]]
 name = "serde"

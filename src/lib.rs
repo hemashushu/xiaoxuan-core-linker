@@ -6,7 +6,6 @@
 
 pub mod indexer;
 pub mod linker;
-pub mod merger;
 
 use std::fmt::Display;
 
@@ -66,8 +65,7 @@ pub enum LinkErrorType {
 
     ExternalFunctionTypeInconsistent(/* external function name */ String),
     ExternalDataTypeInconsistent(/* external data name */ String),
-
-    EntryPointNotFound(/* expected_entry_point_name */ String),
+    // EntryPointNotFound(/* expected_entry_point_name */ String),
 }
 
 impl LinkerError {
@@ -99,7 +97,7 @@ impl Display for LinkerError {
             LinkErrorType::ExternalFunctionTypeInconsistent(external_function_name) => write!(f, "Inconsistent type of the external function \"{external_function_name}\"."),
             LinkErrorType::ExternalDataTypeInconsistent(external_data_name) => write!(f, "Inconsistent type of the external data \"{external_data_name}\"."),
 
-            LinkErrorType::EntryPointNotFound(expected_entry_point_name) => write!(f, "The entry point function \"{expected_entry_point_name}\" does not found."),
+            // LinkErrorType::EntryPointNotFound(expected_entry_point_name) => write!(f, "The entry point function \"{expected_entry_point_name}\" does not found."),
         }
     }
 }
