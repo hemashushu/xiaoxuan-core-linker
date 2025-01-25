@@ -4,7 +4,6 @@
 // the Mozilla Public License version 2.0 and additional exceptions,
 // more details in file LICENSE, LICENSE.additional and CONTRIBUTING.
 
-use anc_assembler::assembler::create_self_reference_import_module_entry;
 use anc_image::{
     entry::{
         ExportDataEntry, ExportFunctionEntry, ExternalFunctionEntry, ExternalLibraryEntry,
@@ -42,11 +41,15 @@ pub struct RemapTable<'a> {
 }
 
 /// Merges submodules or modules.
-/// When merging modules, it's something like the "static linking".
-pub fn link_modules(
+pub fn static_link(
     target_module_name: &str,
     target_module_version: &EffectiveVersion,
-    check_internal_reference_resolved: bool,
+
+    // Used to check that all internal function and data references
+    // (i.e. `import fn/data module::...`) are resolved.
+    // When the link target is a shared module (instead of an object file),
+    // all internal functon and data references need to be resolved.
+    finalize_internal_functions_reference: bool,
     submodule_entries: &[ImageCommonEntry],
 ) -> Result<ImageCommonEntry, LinkerError> {
     // merge type entries
@@ -211,8 +214,8 @@ pub fn link_modules(
     );
 
     // Check that the internally referenced functions and data have all been resolved.
-    if check_internal_reference_resolved {
-        let the_current_module = create_self_reference_import_module_entry();
+    if finalize_internal_functions_reference {
+        let the_current_module = ImportModuleEntry::self_reference_entry();
         let pos_opt = import_module_entries
             .iter()
             .position(|item| item == &the_current_module);
@@ -236,7 +239,7 @@ pub fn link_modules(
         }
     }
 
-    let image_type = if check_internal_reference_resolved {
+    let image_type = if finalize_internal_functions_reference {
         ImageType::SharedModule
     } else {
         ImageType::ObjectFile
@@ -373,8 +376,8 @@ fn merge_import_module_entries(
                     let entry_merged = &entries_merged[pos_merged];
                     let module_name = &entry_merged.name;
 
-                    let dependency_source = entry_source.value.as_ref();
-                    let dependency_merged = entry_merged.value.as_ref();
+                    let dependency_source = entry_source.module_dependency.as_ref();
+                    let dependency_merged = entry_merged.module_dependency.as_ref();
 
                     if dependency_source == dependency_merged {
                         // identical
@@ -449,7 +452,7 @@ fn merge_import_module_entries(
                                     module_name.to_owned(),
                                 )))
                             }
-                            ModuleDependency::Current => {
+                            ModuleDependency::Module => {
                                 return Err(LinkerError::new(LinkErrorType::DependentNameConflict(
                                     module_name.to_owned(),
                                 )))
@@ -1125,12 +1128,6 @@ fn merge_function_entries(
     (merged_function_entries, merged_relocate_list_entries)
 }
 
-// fn is_module_different(left_full_name:&str, right_full_name:&str) -> bool {
-//     let (left_module_name, _) = left_full_name.split_once(NAME_PATH_SEPARATOR).unwrap();
-//     let (right_module_name, _) = right_full_name.split_once(NAME_PATH_SEPARATOR).unwrap();
-//     left_module_name != right_module_name
-// }
-
 /// the map table of importing items to the merged items.
 ///
 /// e.g.
@@ -1158,9 +1155,7 @@ mod tests {
 
     use pretty_assertions::assert_eq;
 
-    use anc_assembler::assembler::{
-        assemble_module_node, create_self_reference_import_module_entry,
-    };
+    use anc_assembler::assembler::assemble_module_node;
     use anc_image::{
         bytecode_reader::format_bytecode_as_text,
         entry::{
@@ -1177,7 +1172,7 @@ mod tests {
     use anc_parser_asm::parser::parse_from_str;
 
     use crate::{
-        linker::{link_modules, merge_import_module_entries},
+        static_linker::{merge_import_module_entries, static_link},
         LinkErrorType, LinkerError,
     };
 
@@ -1257,7 +1252,7 @@ fn add(left:i32, right:i32) -> i32 {        // type 2, local 3
 
         let submodules = vec![submodule0, submodule1];
         let submodule_entries = assemble_submodules(&submodules, &[], &[]);
-        let linked_module = link_modules(
+        let linked_module = static_link(
             "merged",
             &EffectiveVersion::new(0, 0, 0),
             true,
@@ -1382,7 +1377,7 @@ fn add(left:i32, right:i32) -> i32 {        // type 2, local 3
     #[test]
     fn test_merge_import_module_entries() {
         let import_module_entries0 = vec![
-            create_self_reference_import_module_entry(),
+            ImportModuleEntry::self_reference_entry(),
             ImportModuleEntry::new(
                 "network".to_owned(),
                 Box::new(ModuleDependency::Share(Box::new(DependencyShare {
@@ -1404,7 +1399,7 @@ fn add(left:i32, right:i32) -> i32 {        // type 2, local 3
         ];
 
         let import_module_entries1 = vec![
-            create_self_reference_import_module_entry(),
+            ImportModuleEntry::self_reference_entry(),
             ImportModuleEntry::new(
                 // new item
                 "gui".to_owned(),
@@ -1446,7 +1441,7 @@ fn add(left:i32, right:i32) -> i32 {        // type 2, local 3
 
         // check merged entries
         let expected_module_entries_list = vec![
-            create_self_reference_import_module_entry(),
+            ImportModuleEntry::self_reference_entry(),
             ImportModuleEntry::new(
                 "network".to_owned(),
                 Box::new(ModuleDependency::Share(Box::new(DependencyShare {
@@ -1559,7 +1554,7 @@ fn bar() {
 
         let submodules = vec![submodule0, submodule1, submodule2];
         let submodule_entries = assemble_submodules(&submodules, &[], &[]);
-        let linked_module = link_modules(
+        let linked_module = static_link(
             "merged",
             &EffectiveVersion::new(0, 0, 0),
             true,
@@ -1570,7 +1565,7 @@ fn bar() {
         // import modules
         assert_eq!(
             linked_module.import_module_entries,
-            vec![create_self_reference_import_module_entry()]
+            vec![ImportModuleEntry::self_reference_entry()]
         );
 
         // import data
@@ -1768,7 +1763,7 @@ fn bar() -> i32 {
         let submodules = vec![submodule0, submodule1];
         let submodule_entries =
             assemble_submodules(&submodules, &[], &[libabc.clone(), libdef.clone()]);
-        let linked_module = link_modules(
+        let linked_module = static_link(
             "merged",
             &EffectiveVersion::new(0, 0, 0),
             true,
@@ -1907,7 +1902,7 @@ fn add(left:i32, right:i32)->i32 {
 
         let submodules = vec![submodule0, submodule1, submodule2];
         let submodule_entries = assemble_submodules(&submodules, &[], &[]);
-        let linked_module = link_modules(
+        let linked_module = static_link(
             "merged",
             &EffectiveVersion::new(0, 0, 0),
             true,
@@ -1918,7 +1913,7 @@ fn add(left:i32, right:i32)->i32 {
         // import modules
         assert_eq!(
             linked_module.import_module_entries,
-            vec![create_self_reference_import_module_entry()]
+            vec![ImportModuleEntry::self_reference_entry()]
         );
 
         // import functions
@@ -2053,7 +2048,7 @@ fn add(left:i32, right:i32)->i32 {
     }
 
     #[test]
-    fn test_link_with_unresolved_function() {
+    fn test_link_with_unresolved_function_reference() {
         let submodule0 = (
             "hello",
             r#"
@@ -2075,7 +2070,7 @@ fn do_this() {
 
         let submodules = vec![submodule0, submodule1];
         let submodule_entries = assemble_submodules(&submodules, &[], &[]);
-        let merged_result = link_modules(
+        let merged_result = static_link(
             "merged",
             &EffectiveVersion::new(0, 0, 0),
             true,
@@ -2091,7 +2086,7 @@ fn do_this() {
     }
 
     #[test]
-    fn test_link_with_unresolved_data() {
+    fn test_link_with_unresolved_data_reference() {
         let submodule0 = (
             "hello",
             r#"
@@ -2112,7 +2107,7 @@ data d0:i32 = 0x11
 
         let submodules = vec![submodule0, submodule1];
         let submodule_entries = assemble_submodules(&submodules, &[], &[]);
-        let merged_result = link_modules(
+        let merged_result = static_link(
             "merged",
             &EffectiveVersion::new(0, 0, 0),
             true,

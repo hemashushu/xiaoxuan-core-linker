@@ -1,4 +1,4 @@
-// Copyright (c) 2024 Hemashushu <hippospark@gmail.com>, All rights reserved.
+// Copyright (c) 2025 Hemashushu <hippospark@gmail.com>, All rights reserved.
 //
 // This Source Code Form is subject to the terms of
 // the Mozilla Public License version 2.0 and additional exceptions,
@@ -6,21 +6,20 @@
 
 use std::collections::VecDeque;
 
-use anc_assembler::assembler::create_self_reference_import_module_entry;
 use anc_image::{
     entry::{
-        DataIndexEntry, DataIndexListEntry, DependentModuleEntry, EntryPointEntry,
+        DataIndexEntry, DataIndexListEntry, DynamicLinkModuleEntry, EntryPointEntry,
         ExternalFunctionEntry, ExternalFunctionIndexEntry, ExternalFunctionIndexListEntry,
         FunctionIndexEntry, FunctionIndexListEntry, ImageCommonEntry, ImageIndexEntry,
         ImportModuleEntry, TypeEntry,
     },
     module_image::Visibility,
 };
-use anc_isa::{DataSectionType, ModuleDependency};
+use anc_isa::DataSectionType;
 use regex_anre::Regex;
 
 use crate::{
-    linker::{merge_external_library_entries, RemapIndices},
+    static_linker::{merge_external_library_entries, RemapIndices},
     LinkErrorType, LinkerError, DEFAULT_ENTRY_FUNCTION_NAME,
 };
 
@@ -36,7 +35,7 @@ use crate::{
 /// ```text
 ///           [a]
 ///           /|\
-///    /-<---/ | \------>--\
+///    /-<-/-/ | \------>--\
 ///    |   |   |           |
 ///    |   |   v           |
 ///   [b] [c] [d]<-----\  [e]
@@ -66,28 +65,38 @@ use crate::{
 /// requires:
 /// - the first module should be the application itself.
 /// - all dependent modules should be resolved and have no conflict.
-pub fn sort_modules(image_common_entries: &mut [ImageCommonEntry]) -> Vec<ImportModuleEntry> {
-    let mut dependencies: Vec<(ImportModuleEntry, usize)> = vec![]; // all dependencies
-    let mut queue: VecDeque<(&ImageCommonEntry, usize)> = VecDeque::new();
-
-    // push the first module, i.e., the application module.
-    queue.push_back((&image_common_entries[0], 0));
+/// - no dangling modules (i.e., modules that are not referenced) is not allowed.
+pub fn sort_modules_by_dependent_deepth(
+    image_common_entries: &mut [ImageCommonEntry],
+) -> Result<(), LinkerError> {
+    // calculate the max deepth of each dependency
+    let mut dependency_with_deepth_items: Vec<(
+        /* module name */ String,
+        /* max deepth */ usize,
+    )> = vec![];
 
     // push the current module.
     // note that the name is the actual name of the module instead of "module",
     // this is because the name is used for comparison.
-    dependencies.push((
-        ImportModuleEntry::new(
-            image_common_entries[0].name.clone(),
-            Box::new(ModuleDependency::Current),
-        ),
-        0,
+    dependency_with_deepth_items.push((
+        image_common_entries[0].name.clone(),
+        0, // the minimal number
     ));
 
-    let self_reference_module = create_self_reference_import_module_entry();
+    let self_reference_module = ImportModuleEntry::self_reference_entry();
 
-    while !queue.is_empty() {
-        let (parent_module, parent_depth) = queue.pop_front().unwrap();
+    // traversing through dependent tree,
+    // finding the max-depth of each dependency.
+    let mut pending_module_items: VecDeque<(
+        /* current module entry */ &ImageCommonEntry,
+        /* current module deepth */ usize,
+    )> = VecDeque::new();
+
+    // push the first module, i.e., the application module itself.
+    pending_module_items.push_back((&image_common_entries[0], 0));
+
+    while !pending_module_items.is_empty() {
+        let (parent_module, parent_depth) = pending_module_items.pop_front().unwrap();
         let current_depth = parent_depth + 1;
 
         for dependency_new in &parent_module.import_module_entries {
@@ -96,16 +105,18 @@ pub fn sort_modules(image_common_entries: &mut [ImageCommonEntry]) -> Vec<Import
                 continue;
             }
 
-            let index_opt = dependencies
+            // find the existing item
+            let index_opt = dependency_with_deepth_items
                 .iter()
-                .position(|item| item.0.name == dependency_new.name);
+                .position(|(name, _)| name == &dependency_new.name);
 
             if let Some(index) = index_opt {
-                if dependencies[index].1 < current_depth {
+                // record the max depth
+                if dependency_with_deepth_items[index].1 < current_depth {
                     // update the depth
-                    dependencies[index].1 = current_depth;
-                    // add to queue to re-calculate the depth of each subnode.
-                    queue.push_back((
+                    dependency_with_deepth_items[index].1 = current_depth;
+                    // add to queue to re-calculate the depth of its subnodes.
+                    pending_module_items.push_back((
                         image_common_entries
                             .iter()
                             .find(|item| item.name == dependency_new.name)
@@ -114,11 +125,12 @@ pub fn sort_modules(image_common_entries: &mut [ImageCommonEntry]) -> Vec<Import
                     ));
                 }
             } else {
-                // add import entry
-                dependencies.push((dependency_new.to_owned(), current_depth));
+                // add dependency item
+                dependency_with_deepth_items.push((dependency_new.name.to_owned(), current_depth));
 
-                // add to queue to calculate the depth of each subnode.
-                queue.push_back((
+                // add to queue to calculate the depth of its subnodes,
+                // i.e. subnodes of subnode.
+                pending_module_items.push_back((
                     image_common_entries
                         .iter()
                         .find(|item| item.name == dependency_new.name)
@@ -129,38 +141,36 @@ pub fn sort_modules(image_common_entries: &mut [ImageCommonEntry]) -> Vec<Import
         }
     }
 
-    // sort the dependencies
-    dependencies.sort_by(|left, right| left.1.cmp(&right.1));
+    // sort the dependencies by ascending (0->9)
+    dependency_with_deepth_items.sort_by(|left, right| left.1.cmp(&right.1));
+
+    if dependency_with_deepth_items.len() > 1 && dependency_with_deepth_items[1].1 == 0 {
+        return Err(LinkerError {
+            error_type: LinkErrorType::DanglingModule(dependency_with_deepth_items[1].0.clone()),
+        });
+    }
 
     // sort the modules
     image_common_entries.sort_by(|left, right| {
-        let depth_left = dependencies
+        let depth_left = dependency_with_deepth_items
             .iter()
-            .find(|item| item.0.name == left.name)
+            .find(|(name, _)| name == &left.name)
             .unwrap()
             .1;
-        let depth_right = dependencies
+        let depth_right = dependency_with_deepth_items
             .iter()
-            .find(|item| item.0.name == right.name)
+            .find(|(name, _)| name == &right.name)
             .unwrap()
             .1;
         depth_left.cmp(&depth_right)
     });
 
-    let mut entries = dependencies
-        .into_iter()
-        .map(|(entry, _)| entry)
-        .collect::<Vec<_>>();
-
-    // replace the self reference module with the name of "module"
-    entries[0] = self_reference_module;
-
-    entries
+    Ok(())
 }
 
-pub fn build_indices(
-    image_commmon_entries: &[ImageCommonEntry],
-    import_module_entries: &[ImportModuleEntry], // all dependencies
+pub fn dynamic_link(
+    image_commmon_entries: &[ImageCommonEntry], // should be sorted entries
+    dynamic_link_module_entries: &[DynamicLinkModuleEntry],
 ) -> Result<ImageIndexEntry, LinkerError> {
     let mut function_index_list_entries: Vec<FunctionIndexListEntry> = vec![];
     for (source_module_index, source_module_entry) in image_commmon_entries.iter().enumerate() {
@@ -366,13 +376,13 @@ pub fn build_indices(
 
     let entry_point_entries = find_entry_points(&image_commmon_entries[0]);
 
-    let dependent_module_entries = import_module_entries
-        .iter()
-        .map(|item| {
-            let hash = [0_u8; 32]; // todo
-            DependentModuleEntry::new(item.name.clone(), item.value.clone(), hash)
-        })
-        .collect::<Vec<_>>();
+    // let dependent_module_entries = import_module_entries
+    //     .iter()
+    //     .map(|item| {
+    //         let hash = [0_u8; 32]; // todo
+    //         DynamicLinkModuleEntry::new(item.name.clone(), item.module_dependency.clone(), hash)
+    //     })
+    //     .collect::<Vec<_>>();
 
     let image_index_entry = ImageIndexEntry {
         function_index_list_entries,
@@ -382,7 +392,7 @@ pub fn build_indices(
         unified_external_type_entries: type_entries_merged,
         unified_external_function_entries: external_function_entries_merged,
         external_function_index_entries,
-        dependent_module_entries,
+        dynamic_link_module_entries: dynamic_link_module_entries.to_vec(),
     };
 
     Ok(image_index_entry)
@@ -554,9 +564,9 @@ mod tests {
     use anc_image::{
         bytecode_reader::format_bytecode_as_text,
         entry::{
-            DataIndexEntry, DependentModuleEntry, EntryPointEntry, ExternalFunctionEntry,
+            DataIndexEntry, DynamicLinkModuleEntry, EntryPointEntry, ExternalFunctionEntry,
             ExternalFunctionIndexEntry, ExternalLibraryEntry, FunctionIndexEntry, ImageCommonEntry,
-            ImageIndexEntry, ImportModuleEntry, TypeEntry,
+            ImageIndexEntry, ImportModuleEntry, ModuleLocation, TypeEntry,
         },
         module_image::ImageType,
     };
@@ -566,9 +576,11 @@ mod tests {
     };
     use anc_parser_asm::parser::parse_from_str;
 
-    use crate::{indexer::build_indices, linker::link_modules, DEFAULT_ENTRY_FUNCTION_NAME};
+    use crate::{
+        dynamic_linker::dynamic_link, static_linker::static_link, DEFAULT_ENTRY_FUNCTION_NAME,
+    };
 
-    use super::sort_modules;
+    use super::sort_modules_by_dependent_deepth;
 
     fn assemble_submodules(
         submodules: &[(/* fullname */ &str, /* source */ &str)],
@@ -608,7 +620,7 @@ mod tests {
         let submodule_entries =
             assemble_submodules(submodules, import_module_entries, external_library_entries);
 
-        link_modules(
+        static_link(
             module_name,
             &EffectiveVersion::new(0, 0, 0),
             true,
@@ -617,9 +629,12 @@ mod tests {
         .unwrap()
     }
 
-    fn build_index(image_common_entries: &mut [ImageCommonEntry]) -> ImageIndexEntry {
-        let import_module_entries = sort_modules(image_common_entries);
-        build_indices(image_common_entries, &import_module_entries).unwrap()
+    fn build_index(
+        image_common_entries: &mut [ImageCommonEntry],
+        dynamic_link_module_entries: &[DynamicLinkModuleEntry],
+    ) -> ImageIndexEntry {
+        sort_modules_by_dependent_deepth(image_common_entries).unwrap();
+        dynamic_link(image_common_entries, dynamic_link_module_entries).unwrap()
     }
 
     #[test]
@@ -668,7 +683,7 @@ mod tests {
             make_module_entry("j", &[]),
         ];
 
-        let dependencies = sort_modules(&mut modules);
+        sort_modules_by_dependent_deepth(&mut modules).unwrap();
 
         assert_eq!(
             "a,b,c,e,f,d,g,h,i,j",
@@ -679,14 +694,8 @@ mod tests {
                 .join(",")
         );
 
-        assert_eq!(
-            "module,b,c,e,f,d,g,h,i,j",
-            dependencies
-                .iter()
-                .map(|item| item.name.to_owned())
-                .collect::<Vec<String>>()
-                .join(",")
-        );
+        // test dangling module
+        // todo
     }
 
     #[test]
@@ -798,7 +807,14 @@ pub fn sub(left:i32, right:i32) -> i32 {    // func pub idx: 0 (target mod idx: 
         );
 
         let mut image_common_entries = vec![module_app, module_math, module_std];
-        let image_index_entry = build_index(&mut image_common_entries);
+        let image_index_entry = build_index(
+            &mut image_common_entries,
+            &[
+                DynamicLinkModuleEntry::new("app".to_owned(), Box::new(ModuleLocation::Embed)),
+                DynamicLinkModuleEntry::new("math".to_owned(), Box::new(ModuleLocation::Runtime)),
+                DynamicLinkModuleEntry::new("std".to_owned(), Box::new(ModuleLocation::Runtime)),
+            ],
+        );
 
         // check function index list
         assert_eq!(
@@ -854,23 +870,11 @@ pub fn sub(left:i32, right:i32) -> i32 {    // func pub idx: 0 (target mod idx: 
 
         // check module list
         assert_eq!(
-            image_index_entry.dependent_module_entries,
+            image_index_entry.dynamic_link_module_entries,
             vec![
-                DependentModuleEntry::new(
-                    "module".to_owned(),
-                    Box::new(ModuleDependency::Current),
-                    [0_u8; 32]
-                ),
-                DependentModuleEntry::new(
-                    "math".to_owned(),
-                    Box::new(ModuleDependency::Runtime),
-                    [0_u8; 32]
-                ),
-                DependentModuleEntry::new(
-                    "std".to_owned(),
-                    Box::new(ModuleDependency::Runtime),
-                    [0_u8; 32]
-                ),
+                DynamicLinkModuleEntry::new("app".to_owned(), Box::new(ModuleLocation::Embed),),
+                DynamicLinkModuleEntry::new("math".to_owned(), Box::new(ModuleLocation::Runtime),),
+                DynamicLinkModuleEntry::new("std".to_owned(), Box::new(ModuleLocation::Runtime),),
             ]
         );
 
@@ -1031,29 +1035,7 @@ fn do_this() -> i32 {
         );
 
         let mut image_common_entries = vec![module_app, module_math, module_std];
-        let image_index_entry = build_index(&mut image_common_entries);
-
-        // check module list
-        assert_eq!(
-            image_index_entry.dependent_module_entries,
-            vec![
-                DependentModuleEntry::new(
-                    "module".to_owned(),
-                    Box::new(ModuleDependency::Current),
-                    [0_u8; 32]
-                ),
-                DependentModuleEntry::new(
-                    "math".to_owned(),
-                    Box::new(ModuleDependency::Runtime),
-                    [0_u8; 32]
-                ),
-                DependentModuleEntry::new(
-                    "std".to_owned(),
-                    Box::new(ModuleDependency::Runtime),
-                    [0_u8; 32]
-                ),
-            ]
-        );
+        let image_index_entry = build_index(&mut image_common_entries, &[]);
 
         // check unified external library list
         assert_eq!(
@@ -1274,7 +1256,7 @@ fn empty() {
         );
 
         let mut image_common_entries = vec![module_hello];
-        let image_index_entry = build_index(&mut image_common_entries);
+        let image_index_entry = build_index(&mut image_common_entries, &[]);
 
         // check entry point list
         assert_eq!(

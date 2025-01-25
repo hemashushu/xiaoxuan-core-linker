@@ -25,6 +25,7 @@ version = "0.2.1"
 dependencies = [
  "anc-isa",
  "ason",
+ "serde",
 ]
 
 [[package]]

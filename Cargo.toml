@@ -6,10 +6,10 @@ edition = "2021"
 [dependencies]
 anc-isa = { path = "../xiaoxuan-core-isa" }
 anc-image = { path = "../xiaoxuan-core-image" }
-anc-parser-asm = { path = "../xiaoxuan-core-assembly/crates/parser" }
-anc-assembler = { path = "../xiaoxuan-core-assembly/crates/assembler" }
 ason = "1.4.0"
 regex-anre = "1.1.0"
 
 [dev-dependencies]
 pretty_assertions = "1.4.0"
+anc-parser-asm = { path = "../xiaoxuan-core-assembly/crates/parser" }
+anc-assembler = { path = "../xiaoxuan-core-assembly/crates/assembler" }

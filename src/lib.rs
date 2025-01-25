@@ -4,8 +4,8 @@
 // the Mozilla Public License version 2.0 and additional exceptions,
 // more details in file LICENSE, LICENSE.additional and CONTRIBUTING.
 
-pub mod indexer;
-pub mod linker;
+pub mod dynamic_linker;
+pub mod static_linker;
 
 use std::fmt::Display;
 
@@ -21,6 +21,8 @@ pub struct LinkerError {
 #[derive(Debug, PartialEq, Clone)]
 pub enum LinkErrorType {
     CannotLoadMoudle(/* module name */ String, /* message */ String),
+
+    DanglingModule(/* module name */ String),
 
     /// Modules/libraries with the same name but different types.
     DependentNameConflict(/* module/library name */ String),
@@ -78,6 +80,8 @@ impl Display for LinkerError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.error_type {
             LinkErrorType::CannotLoadMoudle(module_name, message) => write!(f, "Failed to load module \"{module_name}\", message: \"{message}\""),
+            LinkErrorType::DanglingModule(module_name) => write!(f, "Found dangling module \"{module_name}\"."),
+
             LinkErrorType::DependentNameConflict(dependency_name) =>write!(f, "Dependent \"{dependency_name}\" cannot be merged because there are different types."),
             LinkErrorType::DependentSourceConflict(dependency_name) => write!(f, "Dependent \"{dependency_name}\" cannot be merged because the sources are different."),
             LinkErrorType::DependentVersionConflict(dependency_name) => write!(f, "Dependent \"{dependency_name}\" cannot be merged because the major versions are different."),
@@ -96,6 +100,7 @@ impl Display for LinkerError {
 
             LinkErrorType::ExternalFunctionTypeInconsistent(external_function_name) => write!(f, "Inconsistent type of the external function \"{external_function_name}\"."),
             LinkErrorType::ExternalDataTypeInconsistent(external_data_name) => write!(f, "Inconsistent type of the external data \"{external_data_name}\"."),
+
 
             // LinkErrorType::EntryPointNotFound(expected_entry_point_name) => write!(f, "The entry point function \"{expected_entry_point_name}\" does not found."),
         }
