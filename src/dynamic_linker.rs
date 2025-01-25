@@ -169,7 +169,10 @@ pub fn sort_modules_by_dependent_deepth(
 }
 
 pub fn dynamic_link(
-    image_commmon_entries: &[ImageCommonEntry], // should be sorted entries
+    // should be sorted entries
+    image_commmon_entries: &[ImageCommonEntry],
+    // can be unsorted, but the amount of 'dynamic_link_module_entries' should be
+    // the same as 'image_commmon_entries'
     dynamic_link_module_entries: &[DynamicLinkModuleEntry],
 ) -> Result<ImageIndexEntry, LinkerError> {
     let mut function_index_list_entries: Vec<FunctionIndexListEntry> = vec![];
@@ -376,13 +379,14 @@ pub fn dynamic_link(
 
     let entry_point_entries = find_entry_points(&image_commmon_entries[0]);
 
-    // let dependent_module_entries = import_module_entries
-    //     .iter()
-    //     .map(|item| {
-    //         let hash = [0_u8; 32]; // todo
-    //         DynamicLinkModuleEntry::new(item.name.clone(), item.module_dependency.clone(), hash)
-    //     })
-    //     .collect::<Vec<_>>();
+    let mut sorted_dynamic_link_module_entries = vec![];
+    for image_commmon_entry in image_commmon_entries {
+        let dl_module = dynamic_link_module_entries
+            .iter()
+            .find(|item| item.name == image_commmon_entry.name)
+            .unwrap();
+        sorted_dynamic_link_module_entries.push(dl_module.to_owned());
+    }
 
     let image_index_entry = ImageIndexEntry {
         function_index_list_entries,
@@ -392,7 +396,7 @@ pub fn dynamic_link(
         unified_external_type_entries: type_entries_merged,
         unified_external_function_entries: external_function_entries_merged,
         external_function_index_entries,
-        dynamic_link_module_entries: dynamic_link_module_entries.to_vec(),
+        dynamic_link_module_entries: sorted_dynamic_link_module_entries,
     };
 
     Ok(image_index_entry)
