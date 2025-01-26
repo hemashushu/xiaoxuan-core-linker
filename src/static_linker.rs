@@ -41,6 +41,14 @@ pub struct RemapTable<'a> {
 }
 
 /// Merges submodules or modules.
+///
+/// When statically linking different modules (non-submodules), if they
+/// both reference the same "Local" module but use different paths (relative paths),
+/// the link will fail. Also, if a "Remote" module is referenced but from
+/// different source, the link will also fail.
+/// So when statically linking different modules, it is recommended to use only
+/// "Share" and "Runtime" type dependencies. "Local" and "Remote" dependencies
+/// should only be considered for internal development and testing purposes.
 pub fn static_link(
     target_module_name: &str,
     target_module_version: &EffectiveVersion,

@@ -144,7 +144,13 @@ pub fn sort_modules_by_dependent_deepth(
     // sort the dependencies by ascending (0->9)
     dependency_with_deepth_items.sort_by(|left, right| left.1.cmp(&right.1));
 
-    if dependency_with_deepth_items.len() > 1 && dependency_with_deepth_items[1].1 == 0 {
+    // check the existance of dangling modules
+    if dependency_with_deepth_items
+        .iter()
+        .filter(|(_, deepth)| *deepth == 0)
+        .count()
+        > 1
+    {
         return Err(LinkerError {
             error_type: LinkErrorType::DanglingModule(dependency_with_deepth_items[1].0.clone()),
         });
@@ -379,6 +385,7 @@ pub fn dynamic_link(
 
     let entry_point_entries = find_entry_points(&image_commmon_entries[0]);
 
+    // sync the order of dynamic_link_module_entries to the one of image_commmon_entries
     let mut sorted_dynamic_link_module_entries = vec![];
     for image_commmon_entry in image_commmon_entries {
         let dl_module = dynamic_link_module_entries
@@ -811,14 +818,14 @@ pub fn sub(left:i32, right:i32) -> i32 {    // func pub idx: 0 (target mod idx: 
         );
 
         let mut image_common_entries = vec![module_app, module_math, module_std];
-        let image_index_entry = build_index(
-            &mut image_common_entries,
-            &[
-                DynamicLinkModuleEntry::new("app".to_owned(), Box::new(ModuleLocation::Embed)),
-                DynamicLinkModuleEntry::new("math".to_owned(), Box::new(ModuleLocation::Runtime)),
-                DynamicLinkModuleEntry::new("std".to_owned(), Box::new(ModuleLocation::Runtime)),
-            ],
-        );
+        let dynamic_link_module_entries = vec![
+            DynamicLinkModuleEntry::new("std".to_owned(), Box::new(ModuleLocation::Runtime)),
+            DynamicLinkModuleEntry::new("app".to_owned(), Box::new(ModuleLocation::Embed)),
+            DynamicLinkModuleEntry::new("math".to_owned(), Box::new(ModuleLocation::Runtime)),
+        ];
+
+        let image_index_entry =
+            build_index(&mut image_common_entries, &dynamic_link_module_entries);
 
         // check function index list
         assert_eq!(
@@ -872,14 +879,16 @@ pub fn sub(left:i32, right:i32) -> i32 {    // func pub idx: 0 (target mod idx: 
             vec![DataIndexEntry::new(2, 0, DataSectionType::Uninit),]
         );
 
-        // check module list
+        // check dynamic link module list
+        let sorted_dynamic_link_module_entries = vec![
+            DynamicLinkModuleEntry::new("app".to_owned(), Box::new(ModuleLocation::Embed)),
+            DynamicLinkModuleEntry::new("math".to_owned(), Box::new(ModuleLocation::Runtime)),
+            DynamicLinkModuleEntry::new("std".to_owned(), Box::new(ModuleLocation::Runtime)),
+        ];
+
         assert_eq!(
             image_index_entry.dynamic_link_module_entries,
-            vec![
-                DynamicLinkModuleEntry::new("app".to_owned(), Box::new(ModuleLocation::Embed),),
-                DynamicLinkModuleEntry::new("math".to_owned(), Box::new(ModuleLocation::Runtime),),
-                DynamicLinkModuleEntry::new("std".to_owned(), Box::new(ModuleLocation::Runtime),),
-            ]
+            sorted_dynamic_link_module_entries
         );
 
         assert_eq!(
@@ -1039,7 +1048,14 @@ fn do_this() -> i32 {
         );
 
         let mut image_common_entries = vec![module_app, module_math, module_std];
-        let image_index_entry = build_index(&mut image_common_entries, &[]);
+        let dynamic_link_module_entries = vec![
+            DynamicLinkModuleEntry::new("app".to_owned(), Box::new(ModuleLocation::Embed)),
+            DynamicLinkModuleEntry::new("math".to_owned(), Box::new(ModuleLocation::Runtime)),
+            DynamicLinkModuleEntry::new("std".to_owned(), Box::new(ModuleLocation::Runtime)),
+        ];
+
+        let image_index_entry =
+            build_index(&mut image_common_entries, &dynamic_link_module_entries);
 
         // check unified external library list
         assert_eq!(
@@ -1260,7 +1276,12 @@ fn empty() {
         );
 
         let mut image_common_entries = vec![module_hello];
-        let image_index_entry = build_index(&mut image_common_entries, &[]);
+        let dynamic_link_module_entries = vec![DynamicLinkModuleEntry::new(
+            "hello".to_owned(),
+            Box::new(ModuleLocation::Runtime),
+        )];
+        let image_index_entry =
+            build_index(&mut image_common_entries, &dynamic_link_module_entries);
 
         // check entry point list
         assert_eq!(
