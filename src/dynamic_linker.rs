@@ -974,15 +974,15 @@ fn _start()->i32 {
             &[
                 ExternalLibraryEntry::new(
                     "foo".to_owned(),
-                    Box::new(ExternalLibraryDependency::Runtime),
+                    Box::new(ExternalLibraryDependency::System("foo".to_owned())),
                 ),
                 ExternalLibraryEntry::new(
                     "bar".to_owned(),
-                    Box::new(ExternalLibraryDependency::Runtime),
+                    Box::new(ExternalLibraryDependency::System("bar".to_owned())),
                 ),
                 ExternalLibraryEntry::new(
                     "hello".to_owned(),
-                    Box::new(ExternalLibraryDependency::Runtime),
+                    Box::new(ExternalLibraryDependency::System("hello".to_owned())),
                 ),
             ],
         );
@@ -1012,15 +1012,15 @@ fn do_that() {
             &[
                 ExternalLibraryEntry::new(
                     "bar".to_owned(),
-                    Box::new(ExternalLibraryDependency::Runtime),
+                    Box::new(ExternalLibraryDependency::System("bar".to_owned())),
                 ),
                 ExternalLibraryEntry::new(
                     "foo".to_owned(),
-                    Box::new(ExternalLibraryDependency::Runtime),
+                    Box::new(ExternalLibraryDependency::System("foo".to_owned())),
                 ),
                 ExternalLibraryEntry::new(
                     "world".to_owned(),
-                    Box::new(ExternalLibraryDependency::Runtime),
+                    Box::new(ExternalLibraryDependency::System("world".to_owned())),
                 ),
             ],
         );
@@ -1043,7 +1043,7 @@ fn do_this() -> i32 {
             &[],
             &[ExternalLibraryEntry::new(
                 "foo".to_owned(),
-                Box::new(ExternalLibraryDependency::Runtime),
+                Box::new(ExternalLibraryDependency::System("foo".to_owned())),
             )],
         );
 
@@ -1063,19 +1063,19 @@ fn do_this() -> i32 {
             vec![
                 ExternalLibraryEntry::new(
                     "foo".to_owned(),
-                    Box::new(ExternalLibraryDependency::Runtime)
+                    Box::new(ExternalLibraryDependency::System("foo".to_owned()))
                 ),
                 ExternalLibraryEntry::new(
                     "bar".to_owned(),
-                    Box::new(ExternalLibraryDependency::Runtime)
+                    Box::new(ExternalLibraryDependency::System("bar".to_owned()))
                 ),
                 ExternalLibraryEntry::new(
                     "hello".to_owned(),
-                    Box::new(ExternalLibraryDependency::Runtime)
+                    Box::new(ExternalLibraryDependency::System("hello".to_owned()))
                 ),
                 ExternalLibraryEntry::new(
                     "world".to_owned(),
-                    Box::new(ExternalLibraryDependency::Runtime)
+                    Box::new(ExternalLibraryDependency::System("world".to_owned()))
                 ),
             ]
         );

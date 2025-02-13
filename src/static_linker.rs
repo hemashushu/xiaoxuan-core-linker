@@ -973,11 +973,11 @@ pub fn merge_external_library_entries(
                                     ));
                                 }
                             }
-                            ExternalLibraryDependency::Runtime => {
-                                return Err(LinkerError::new(LinkErrorType::DependentNameConflict(
-                                    library_name.to_owned(),
-                                )))
-                            }
+                            // ExternalLibraryDependency::Runtime => {
+                            //     return Err(LinkerError::new(LinkErrorType::DependentNameConflict(
+                            //         library_name.to_owned(),
+                            //     )))
+                            // }
                             ExternalLibraryDependency::System(_) => {
                                 return Err(LinkerError::new(LinkErrorType::DependentNameConflict(
                                     library_name.to_owned(),
@@ -1389,7 +1389,6 @@ fn add(left:i32, right:i32) -> i32 {        // type 2, local 3
             ImportModuleEntry::new(
                 "network".to_owned(),
                 Box::new(ModuleDependency::Share(Box::new(DependencyShare {
-                    repository: String::default(),
                     version: "1.0.1".to_owned(),
                     condition: DependencyCondition::True,
                     parameters: HashMap::default(),
@@ -1398,7 +1397,6 @@ fn add(left:i32, right:i32) -> i32 {        // type 2, local 3
             ImportModuleEntry::new(
                 "encoding".to_owned(),
                 Box::new(ModuleDependency::Share(Box::new(DependencyShare {
-                    repository: String::default(),
                     version: "2.1.0".to_owned(),
                     condition: DependencyCondition::True,
                     parameters: HashMap::default(),
@@ -1412,7 +1410,6 @@ fn add(left:i32, right:i32) -> i32 {        // type 2, local 3
                 // new item
                 "gui".to_owned(),
                 Box::new(ModuleDependency::Share(Box::new(DependencyShare {
-                    repository: String::default(),
                     version: "1.3.4".to_owned(),
                     condition: DependencyCondition::True,
                     parameters: HashMap::default(),
@@ -1422,7 +1419,6 @@ fn add(left:i32, right:i32) -> i32 {        // type 2, local 3
                 // updated item
                 "encoding".to_owned(),
                 Box::new(ModuleDependency::Share(Box::new(DependencyShare {
-                    repository: String::default(),
                     version: "2.2.0".to_owned(),
                     condition: DependencyCondition::True,
                     parameters: HashMap::default(),
@@ -1432,7 +1428,6 @@ fn add(left:i32, right:i32) -> i32 {        // type 2, local 3
                 // identical item
                 "network".to_owned(),
                 Box::new(ModuleDependency::Share(Box::new(DependencyShare {
-                    repository: String::default(),
                     version: "1.0.1".to_owned(),
                     condition: DependencyCondition::True,
                     parameters: HashMap::default(),
@@ -1453,7 +1448,6 @@ fn add(left:i32, right:i32) -> i32 {        // type 2, local 3
             ImportModuleEntry::new(
                 "network".to_owned(),
                 Box::new(ModuleDependency::Share(Box::new(DependencyShare {
-                    repository: String::default(),
                     version: "1.0.1".to_owned(),
                     condition: DependencyCondition::True,
                     parameters: HashMap::default(),
@@ -1463,7 +1457,6 @@ fn add(left:i32, right:i32) -> i32 {        // type 2, local 3
             ImportModuleEntry::new(
                 "encoding".to_owned(),
                 Box::new(ModuleDependency::Share(Box::new(DependencyShare {
-                    repository: String::default(),
                     version: "2.2.0".to_owned(),
                     condition: DependencyCondition::True,
                     parameters: HashMap::default(),
@@ -1473,7 +1466,6 @@ fn add(left:i32, right:i32) -> i32 {        // type 2, local 3
             ImportModuleEntry::new(
                 "gui".to_owned(),
                 Box::new(ModuleDependency::Share(Box::new(DependencyShare {
-                    repository: String::default(),
                     version: "1.3.4".to_owned(),
                     condition: DependencyCondition::True,
                     parameters: HashMap::default(),
@@ -1761,11 +1753,11 @@ fn bar() -> i32 {
 
         let libabc = ExternalLibraryEntry::new(
             "abc".to_owned(),
-            Box::new(ExternalLibraryDependency::Runtime),
+            Box::new(ExternalLibraryDependency::System("abc".to_owned())),
         );
         let libdef = ExternalLibraryEntry::new(
             "def".to_owned(),
-            Box::new(ExternalLibraryDependency::Runtime),
+            Box::new(ExternalLibraryDependency::System("def".to_owned())),
         );
 
         let submodules = vec![submodule0, submodule1];
